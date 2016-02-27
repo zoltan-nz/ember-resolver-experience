@@ -37,6 +37,16 @@ Ember.keys(Ember.__loader.registry)
 
 * x-handlebars scripts are compiled and attached to Ember.TEMPLATES, the script tags removed.
 
+* Setup `app.js` and create an app.
+
+# 2. Second
+
+Compile template.js file based on hbs template files with grunt.
+
+Basic setup, with an index.html, manually added vendor files.
+
+Using `Gruntfile.js`
+Using `package.json`
 
 
 
