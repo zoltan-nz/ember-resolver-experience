@@ -48,5 +48,20 @@ Basic setup, with an index.html, manually added vendor files.
 Using `Gruntfile.js`
 Using `package.json`
 
+Manually recreate the structure what Ember-cli generates in dist folder.
+
+```
+index.html
+/assets
+  app.js
+  vendor.js
+```
+
+Looks, `loader.js` and `ember/resolver` is important.
+
+- define
+- require
+
+
 
 
