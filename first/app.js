@@ -1,1 +1,5 @@
-var App = Ember.Application.create();
+var FirstApp = Ember.Application.create(
+    {
+        LOG_RESOLVER: true
+    }
+);

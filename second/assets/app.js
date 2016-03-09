@@ -1,9 +1,35 @@
-define('second-app/app', ['exports'], function (exports) {
-    var App = undefined;
+"use strict";
+/* globals define registry requirejs */
 
-    App = Ember.Application.extend();
+define('second-app/app', ['exports', 'ember', 'ember/resolver', 'ember/load-initializers'], function(exports, _ember, _emberResolver, _loadInitializers) {
+  var App = undefined;
 
-    exports.default = App;
+  App = _ember['default'].Application.extend(
+    {
+      modulePrefix: 'second-app',
+      Resolver: _emberResolver['default']
+    }
+  );
+
+  _loadInitializers['default'](App, 'second-app');
+
+  exports['default'] = App;
 });
 
-require('second-app/app').default.create();
+define('second-app/router', ['exports', 'ember'], function(exports, _ember) {
+
+  var Router = _ember['default'].Router.extend({
+    location: 'auto'
+  });
+
+  Router.map(function() {
+    this.route('about');
+  });
+
+  exports['default'] = Router;
+});
+
+require('second-app/app')['default'].create({
+  name: 'second-app',
+  LOG_RESOLVER: true
+});

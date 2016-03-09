@@ -111,89 +111,128 @@
   })();
 
   enifed("backburner",
-      ["backburner/utils","backburner/platform","backburner/binary-search","backburner/deferred-action-queues","exports"],
-      function(__dependency1__, __dependency2__, __dependency3__, __dependency4__, __exports__) {
-        "use strict";
-        var each = __dependency1__.each;
-        var isString = __dependency1__.isString;
-        var isFunction = __dependency1__.isFunction;
-        var isNumber = __dependency1__.isNumber;
-        var isCoercableNumber = __dependency1__.isCoercableNumber;
-        var wrapInTryCatch = __dependency1__.wrapInTryCatch;
-        var now = __dependency1__.now;
+    ["backburner/utils","backburner/platform","backburner/binary-search","backburner/deferred-action-queues","exports"],
+    function(__dependency1__, __dependency2__, __dependency3__, __dependency4__, __exports__) {
+      "use strict";
+      var each = __dependency1__.each;
+      var isString = __dependency1__.isString;
+      var isFunction = __dependency1__.isFunction;
+      var isNumber = __dependency1__.isNumber;
+      var isCoercableNumber = __dependency1__.isCoercableNumber;
+      var wrapInTryCatch = __dependency1__.wrapInTryCatch;
+      var now = __dependency1__.now;
 
-        var needsIETryCatchFix = __dependency2__.needsIETryCatchFix;
+      var needsIETryCatchFix = __dependency2__.needsIETryCatchFix;
 
-        var searchTimer = __dependency3__["default"];
+      var searchTimer = __dependency3__["default"];
 
-        var DeferredActionQueues = __dependency4__["default"];
+      var DeferredActionQueues = __dependency4__["default"];
 
-        var slice = [].slice;
-        var pop = [].pop;
-        var global = this;
+      var slice = [].slice;
+      var pop = [].pop;
+      var global = this;
 
-        function Backburner(queueNames, options) {
-          this.queueNames = queueNames;
-          this.options = options || {};
-          if (!this.options.defaultQueue) {
-            this.options.defaultQueue = queueNames[0];
-          }
-          this.instanceStack = [];
-          this._debouncees = [];
-          this._throttlers = [];
-          this._timers = [];
+      function Backburner(queueNames, options) {
+        this.queueNames = queueNames;
+        this.options = options || {};
+        if (!this.options.defaultQueue) {
+          this.options.defaultQueue = queueNames[0];
         }
+        this.instanceStack = [];
+        this._debouncees = [];
+        this._throttlers = [];
+        this._timers = [];
+      }
 
-        Backburner.prototype = {
-          begin: function() {
-            var options = this.options;
-            var onBegin = options && options.onBegin;
-            var previousInstance = this.currentInstance;
+      Backburner.prototype = {
+        begin: function() {
+          var options = this.options;
+          var onBegin = options && options.onBegin;
+          var previousInstance = this.currentInstance;
 
-            if (previousInstance) {
-              this.instanceStack.push(previousInstance);
+          if (previousInstance) {
+            this.instanceStack.push(previousInstance);
+          }
+
+          this.currentInstance = new DeferredActionQueues(this.queueNames, options);
+          if (onBegin) {
+            onBegin(this.currentInstance, previousInstance);
+          }
+        },
+
+        end: function() {
+          var options = this.options;
+          var onEnd = options && options.onEnd;
+          var currentInstance = this.currentInstance;
+          var nextInstance = null;
+
+          // Prevent double-finally bug in Safari 6.0.2 and iOS 6
+          // This bug appears to be resolved in Safari 6.0.5 and iOS 7
+          var finallyAlreadyCalled = false;
+          try {
+            currentInstance.flush();
+          } finally {
+            if (!finallyAlreadyCalled) {
+              finallyAlreadyCalled = true;
+
+              this.currentInstance = null;
+
+              if (this.instanceStack.length) {
+                nextInstance = this.instanceStack.pop();
+                this.currentInstance = nextInstance;
+              }
+
+              if (onEnd) {
+                onEnd(currentInstance, nextInstance);
+              }
             }
+          }
+        },
 
-            this.currentInstance = new DeferredActionQueues(this.queueNames, options);
-            if (onBegin) {
-              onBegin(this.currentInstance, previousInstance);
-            }
-          },
+        run: function(target, method /*, args */) {
+          var onError = getOnError(this.options);
 
-          end: function() {
-            var options = this.options;
-            var onEnd = options && options.onEnd;
-            var currentInstance = this.currentInstance;
-            var nextInstance = null;
+          this.begin();
 
-            // Prevent double-finally bug in Safari 6.0.2 and iOS 6
-            // This bug appears to be resolved in Safari 6.0.5 and iOS 7
-            var finallyAlreadyCalled = false;
+          if (!method) {
+            method = target;
+            target = null;
+          }
+
+          if (isString(method)) {
+            method = target[method];
+          }
+
+          var args = slice.call(arguments, 2);
+
+          // guard against Safari 6's double-finally bug
+          var didFinally = false;
+
+          if (onError) {
             try {
-              currentInstance.flush();
+              return method.apply(target, args);
+            } catch(error) {
+              onError(error);
             } finally {
-              if (!finallyAlreadyCalled) {
-                finallyAlreadyCalled = true;
-
-                this.currentInstance = null;
-
-                if (this.instanceStack.length) {
-                  nextInstance = this.instanceStack.pop();
-                  this.currentInstance = nextInstance;
-                }
-
-                if (onEnd) {
-                  onEnd(currentInstance, nextInstance);
-                }
+              if (!didFinally) {
+                didFinally = true;
+                this.end();
               }
             }
-          },
+          } else {
+            try {
+              return method.apply(target, args);
+            } finally {
+              if (!didFinally) {
+                didFinally = true;
+                this.end();
+              }
+            }
+          }
+        },
 
-          run: function(target, method /*, args */) {
-            var onError = getOnError(this.options);
-
-            this.begin();
-
+        join: function(target, method /*, args */) {
+          if (this.currentInstance) {
             if (!method) {
               method = target;
               target = null;
@@ -203,899 +242,860 @@
               method = target[method];
             }
 
-            var args = slice.call(arguments, 2);
+            return method.apply(target, slice.call(arguments, 2));
+          } else {
+            return this.run.apply(this, arguments);
+          }
+        },
 
-            // guard against Safari 6's double-finally bug
-            var didFinally = false;
+        defer: function(queueName, target, method /* , args */) {
+          if (!method) {
+            method = target;
+            target = null;
+          }
 
-            if (onError) {
-              try {
-                return method.apply(target, args);
-              } catch(error) {
-                onError(error);
-              } finally {
-                if (!didFinally) {
-                  didFinally = true;
-                  this.end();
-                }
-              }
-            } else {
-              try {
-                return method.apply(target, args);
-              } finally {
-                if (!didFinally) {
-                  didFinally = true;
-                  this.end();
-                }
-              }
+          if (isString(method)) {
+            method = target[method];
+          }
+
+          var stack = this.DEBUG ? new Error() : undefined;
+          var length = arguments.length;
+          var args;
+
+          if (length > 3) {
+            args = new Array(length - 3);
+            for (var i = 3; i < length; i++) {
+              args[i-3] = arguments[i];
             }
-          },
+          } else {
+            args = undefined;
+          }
 
-          join: function(target, method /*, args */) {
-            if (this.currentInstance) {
-              if (!method) {
-                method = target;
-                target = null;
-              }
+          if (!this.currentInstance) { createAutorun(this); }
+          return this.currentInstance.schedule(queueName, target, method, args, false, stack);
+        },
 
-              if (isString(method)) {
-                method = target[method];
-              }
+        deferOnce: function(queueName, target, method /* , args */) {
+          if (!method) {
+            method = target;
+            target = null;
+          }
 
-              return method.apply(target, slice.call(arguments, 2));
-            } else {
-              return this.run.apply(this, arguments);
+          if (isString(method)) {
+            method = target[method];
+          }
+
+          var stack = this.DEBUG ? new Error() : undefined;
+          var length = arguments.length;
+          var args;
+
+          if (length > 3) {
+            args = new Array(length - 3);
+            for (var i = 3; i < length; i++) {
+              args[i-3] = arguments[i];
             }
-          },
+          } else {
+            args = undefined;
+          }
 
-          defer: function(queueName, target, method /* , args */) {
-            if (!method) {
-              method = target;
-              target = null;
-            }
+          if (!this.currentInstance) {
+            createAutorun(this);
+          }
+          return this.currentInstance.schedule(queueName, target, method, args, true, stack);
+        },
 
-            if (isString(method)) {
-              method = target[method];
-            }
+        setTimeout: function() {
+          var l = arguments.length;
+          var args = new Array(l);
 
-            var stack = this.DEBUG ? new Error() : undefined;
-            var length = arguments.length;
-            var args;
+          for (var x = 0; x < l; x++) {
+            args[x] = arguments[x];
+          }
 
-            if (length > 3) {
-              args = new Array(length - 3);
-              for (var i = 3; i < length; i++) {
-                args[i-3] = arguments[i];
-              }
-            } else {
-              args = undefined;
-            }
+          var length = args.length,
+            method, wait, target,
+            methodOrTarget, methodOrWait, methodOrArgs;
 
-            if (!this.currentInstance) { createAutorun(this); }
-            return this.currentInstance.schedule(queueName, target, method, args, false, stack);
-          },
+          if (length === 0) {
+            return;
+          } else if (length === 1) {
+            method = args.shift();
+            wait = 0;
+          } else if (length === 2) {
+            methodOrTarget = args[0];
+            methodOrWait = args[1];
 
-          deferOnce: function(queueName, target, method /* , args */) {
-            if (!method) {
-              method = target;
-              target = null;
-            }
-
-            if (isString(method)) {
-              method = target[method];
-            }
-
-            var stack = this.DEBUG ? new Error() : undefined;
-            var length = arguments.length;
-            var args;
-
-            if (length > 3) {
-              args = new Array(length - 3);
-              for (var i = 3; i < length; i++) {
-                args[i-3] = arguments[i];
-              }
-            } else {
-              args = undefined;
-            }
-
-            if (!this.currentInstance) {
-              createAutorun(this);
-            }
-            return this.currentInstance.schedule(queueName, target, method, args, true, stack);
-          },
-
-          setTimeout: function() {
-            var l = arguments.length;
-            var args = new Array(l);
-
-            for (var x = 0; x < l; x++) {
-              args[x] = arguments[x];
-            }
-
-            var length = args.length,
-                method, wait, target,
-                methodOrTarget, methodOrWait, methodOrArgs;
-
-            if (length === 0) {
-              return;
-            } else if (length === 1) {
+            if (isFunction(methodOrWait) || isFunction(methodOrTarget[methodOrWait])) {
+              target = args.shift();
               method = args.shift();
               wait = 0;
-            } else if (length === 2) {
-              methodOrTarget = args[0];
-              methodOrWait = args[1];
-
-              if (isFunction(methodOrWait) || isFunction(methodOrTarget[methodOrWait])) {
-                target = args.shift();
-                method = args.shift();
-                wait = 0;
-              } else if (isCoercableNumber(methodOrWait)) {
-                method = args.shift();
-                wait = args.shift();
-              } else {
-                method = args.shift();
-                wait =  0;
-              }
+            } else if (isCoercableNumber(methodOrWait)) {
+              method = args.shift();
+              wait = args.shift();
             } else {
-              var last = args[args.length - 1];
+              method = args.shift();
+              wait =  0;
+            }
+          } else {
+            var last = args[args.length - 1];
 
-              if (isCoercableNumber(last)) {
-                wait = args.pop();
-              } else {
-                wait = 0;
-              }
-
-              methodOrTarget = args[0];
-              methodOrArgs = args[1];
-
-              if (isFunction(methodOrArgs) || (isString(methodOrArgs) &&
-                  methodOrTarget !== null &&
-                  methodOrArgs in methodOrTarget)) {
-                target = args.shift();
-                method = args.shift();
-              } else {
-                method = args.shift();
-              }
+            if (isCoercableNumber(last)) {
+              wait = args.pop();
+            } else {
+              wait = 0;
             }
 
-            var executeAt = now() + parseInt(wait, 10);
+            methodOrTarget = args[0];
+            methodOrArgs = args[1];
 
-            if (isString(method)) {
-              method = target[method];
+            if (isFunction(methodOrArgs) || (isString(methodOrArgs) &&
+              methodOrTarget !== null &&
+              methodOrArgs in methodOrTarget)) {
+              target = args.shift();
+              method = args.shift();
+            } else {
+              method = args.shift();
             }
+          }
 
-            var onError = getOnError(this.options);
+          var executeAt = now() + parseInt(wait, 10);
 
-            function fn() {
-              if (onError) {
-                try {
-                  method.apply(target, args);
-                } catch (e) {
-                  onError(e);
-                }
-              } else {
+          if (isString(method)) {
+            method = target[method];
+          }
+
+          var onError = getOnError(this.options);
+
+          function fn() {
+            if (onError) {
+              try {
                 method.apply(target, args);
+              } catch (e) {
+                onError(e);
               }
-            }
-
-            // find position to insert
-            var i = searchTimer(executeAt, this._timers);
-
-            this._timers.splice(i, 0, executeAt, fn);
-
-            updateLaterTimer(this, executeAt, wait);
-
-            return fn;
-          },
-
-          throttle: function(target, method /* , args, wait, [immediate] */) {
-            var backburner = this;
-            var args = arguments;
-            var immediate = pop.call(args);
-            var wait, throttler, index, timer;
-
-            if (isNumber(immediate) || isString(immediate)) {
-              wait = immediate;
-              immediate = true;
             } else {
-              wait = pop.call(args);
+              method.apply(target, args);
             }
+          }
 
-            wait = parseInt(wait, 10);
+          // find position to insert
+          var i = searchTimer(executeAt, this._timers);
 
-            index = findThrottler(target, method, this._throttlers);
-            if (index > -1) { return this._throttlers[index]; } // throttled
+          this._timers.splice(i, 0, executeAt, fn);
 
-            timer = global.setTimeout(function() {
-              if (!immediate) {
-                backburner.run.apply(backburner, args);
-              }
-              var index = findThrottler(target, method, backburner._throttlers);
-              if (index > -1) {
-                backburner._throttlers.splice(index, 1);
-              }
-            }, wait);
+          updateLaterTimer(this, executeAt, wait);
 
-            if (immediate) {
-              this.run.apply(this, args);
-            }
+          return fn;
+        },
 
-            throttler = [target, method, timer];
+        throttle: function(target, method /* , args, wait, [immediate] */) {
+          var backburner = this;
+          var args = arguments;
+          var immediate = pop.call(args);
+          var wait, throttler, index, timer;
 
-            this._throttlers.push(throttler);
+          if (isNumber(immediate) || isString(immediate)) {
+            wait = immediate;
+            immediate = true;
+          } else {
+            wait = pop.call(args);
+          }
 
-            return throttler;
-          },
+          wait = parseInt(wait, 10);
 
-          debounce: function(target, method /* , args, wait, [immediate] */) {
-            var backburner = this;
-            var args = arguments;
-            var immediate = pop.call(args);
-            var wait, index, debouncee, timer;
+          index = findThrottler(target, method, this._throttlers);
+          if (index > -1) { return this._throttlers[index]; } // throttled
 
-            if (isNumber(immediate) || isString(immediate)) {
-              wait = immediate;
-              immediate = false;
-            } else {
-              wait = pop.call(args);
-            }
-
-            wait = parseInt(wait, 10);
-            // Remove debouncee
-            index = findDebouncee(target, method, this._debouncees);
-
-            if (index > -1) {
-              debouncee = this._debouncees[index];
-              this._debouncees.splice(index, 1);
-              clearTimeout(debouncee[2]);
-            }
-
-            timer = global.setTimeout(function() {
-              if (!immediate) {
-                backburner.run.apply(backburner, args);
-              }
-              var index = findDebouncee(target, method, backburner._debouncees);
-              if (index > -1) {
-                backburner._debouncees.splice(index, 1);
-              }
-            }, wait);
-
-            if (immediate && index === -1) {
+          timer = global.setTimeout(function() {
+            if (!immediate) {
               backburner.run.apply(backburner, args);
             }
-
-            debouncee = [
-              target,
-              method,
-              timer
-            ];
-
-            backburner._debouncees.push(debouncee);
-
-            return debouncee;
-          },
-
-          cancelTimers: function() {
-            var clearItems = function(item) {
-              clearTimeout(item[2]);
-            };
-
-            each(this._throttlers, clearItems);
-            this._throttlers = [];
-
-            each(this._debouncees, clearItems);
-            this._debouncees = [];
-
-            if (this._laterTimer) {
-              clearTimeout(this._laterTimer);
-              this._laterTimer = null;
-            }
-            this._timers = [];
-
-            if (this._autorun) {
-              clearTimeout(this._autorun);
-              this._autorun = null;
-            }
-          },
-
-          hasTimers: function() {
-            return !!this._timers.length || !!this._debouncees.length || !!this._throttlers.length || this._autorun;
-          },
-
-          cancel: function(timer) {
-            var timerType = typeof timer;
-
-            if (timer && timerType === 'object' && timer.queue && timer.method) { // we're cancelling a deferOnce
-              return timer.queue.cancel(timer);
-            } else if (timerType === 'function') { // we're cancelling a setTimeout
-              for (var i = 0, l = this._timers.length; i < l; i += 2) {
-                if (this._timers[i + 1] === timer) {
-                  this._timers.splice(i, 2); // remove the two elements
-                  if (i === 0) {
-                    if (this._laterTimer) { // Active timer? Then clear timer and reset for future timer
-                      clearTimeout(this._laterTimer);
-                      this._laterTimer = null;
-                    }
-                    if (this._timers.length > 0) { // Update to next available timer when available
-                      updateLaterTimer(this, this._timers[0], this._timers[0] - now());
-                    }
-                  }
-                  return true;
-                }
-              }
-            } else if (Object.prototype.toString.call(timer) === "[object Array]"){ // we're cancelling a throttle or debounce
-              return this._cancelItem(findThrottler, this._throttlers, timer) ||
-                  this._cancelItem(findDebouncee, this._debouncees, timer);
-            } else {
-              return; // timer was null or not a timer
-            }
-          },
-
-          _cancelItem: function(findMethod, array, timer){
-            var item, index;
-
-            if (timer.length < 3) { return false; }
-
-            index = findMethod(timer[0], timer[1], array);
-
+            var index = findThrottler(target, method, backburner._throttlers);
             if (index > -1) {
+              backburner._throttlers.splice(index, 1);
+            }
+          }, wait);
 
-              item = array[index];
+          if (immediate) {
+            this.run.apply(this, args);
+          }
 
-              if (item[2] === timer[2]) {
-                array.splice(index, 1);
-                clearTimeout(timer[2]);
+          throttler = [target, method, timer];
+
+          this._throttlers.push(throttler);
+
+          return throttler;
+        },
+
+        debounce: function(target, method /* , args, wait, [immediate] */) {
+          var backburner = this;
+          var args = arguments;
+          var immediate = pop.call(args);
+          var wait, index, debouncee, timer;
+
+          if (isNumber(immediate) || isString(immediate)) {
+            wait = immediate;
+            immediate = false;
+          } else {
+            wait = pop.call(args);
+          }
+
+          wait = parseInt(wait, 10);
+          // Remove debouncee
+          index = findDebouncee(target, method, this._debouncees);
+
+          if (index > -1) {
+            debouncee = this._debouncees[index];
+            this._debouncees.splice(index, 1);
+            clearTimeout(debouncee[2]);
+          }
+
+          timer = global.setTimeout(function() {
+            if (!immediate) {
+              backburner.run.apply(backburner, args);
+            }
+            var index = findDebouncee(target, method, backburner._debouncees);
+            if (index > -1) {
+              backburner._debouncees.splice(index, 1);
+            }
+          }, wait);
+
+          if (immediate && index === -1) {
+            backburner.run.apply(backburner, args);
+          }
+
+          debouncee = [
+            target,
+            method,
+            timer
+          ];
+
+          backburner._debouncees.push(debouncee);
+
+          return debouncee;
+        },
+
+        cancelTimers: function() {
+          var clearItems = function(item) {
+            clearTimeout(item[2]);
+          };
+
+          each(this._throttlers, clearItems);
+          this._throttlers = [];
+
+          each(this._debouncees, clearItems);
+          this._debouncees = [];
+
+          if (this._laterTimer) {
+            clearTimeout(this._laterTimer);
+            this._laterTimer = null;
+          }
+          this._timers = [];
+
+          if (this._autorun) {
+            clearTimeout(this._autorun);
+            this._autorun = null;
+          }
+        },
+
+        hasTimers: function() {
+          return !!this._timers.length || !!this._debouncees.length || !!this._throttlers.length || this._autorun;
+        },
+
+        cancel: function(timer) {
+          var timerType = typeof timer;
+
+          if (timer && timerType === 'object' && timer.queue && timer.method) { // we're cancelling a deferOnce
+            return timer.queue.cancel(timer);
+          } else if (timerType === 'function') { // we're cancelling a setTimeout
+            for (var i = 0, l = this._timers.length; i < l; i += 2) {
+              if (this._timers[i + 1] === timer) {
+                this._timers.splice(i, 2); // remove the two elements
+                if (i === 0) {
+                  if (this._laterTimer) { // Active timer? Then clear timer and reset for future timer
+                    clearTimeout(this._laterTimer);
+                    this._laterTimer = null;
+                  }
+                  if (this._timers.length > 0) { // Update to next available timer when available
+                    updateLaterTimer(this, this._timers[0], this._timers[0] - now());
+                  }
+                }
                 return true;
               }
             }
-
-            return false;
+          } else if (Object.prototype.toString.call(timer) === "[object Array]"){ // we're cancelling a throttle or debounce
+            return this._cancelItem(findThrottler, this._throttlers, timer) ||
+              this._cancelItem(findDebouncee, this._debouncees, timer);
+          } else {
+            return; // timer was null or not a timer
           }
-        };
+        },
 
-        Backburner.prototype.schedule = Backburner.prototype.defer;
-        Backburner.prototype.scheduleOnce = Backburner.prototype.deferOnce;
-        Backburner.prototype.later = Backburner.prototype.setTimeout;
+        _cancelItem: function(findMethod, array, timer){
+          var item, index;
 
-        if (needsIETryCatchFix) {
-          var originalRun = Backburner.prototype.run;
-          Backburner.prototype.run = wrapInTryCatch(originalRun);
+          if (timer.length < 3) { return false; }
 
-          var originalEnd = Backburner.prototype.end;
-          Backburner.prototype.end = wrapInTryCatch(originalEnd);
-        }
+          index = findMethod(timer[0], timer[1], array);
 
-        function getOnError(options) {
-          return options.onError || (options.onErrorTarget && options.onErrorTarget[options.onErrorMethod]);
-        }
+          if (index > -1) {
 
-        function createAutorun(backburner) {
-          backburner.begin();
-          backburner._autorun = global.setTimeout(function() {
-            backburner._autorun = null;
-            backburner.end();
-          });
-        }
+            item = array[index];
 
-        function updateLaterTimer(backburner, executeAt, wait) {
-          var n = now();
-          if (!backburner._laterTimer || executeAt < backburner._laterTimerExpiresAt || backburner._laterTimerExpiresAt < n) {
-
-            if (backburner._laterTimer) {
-              // Clear when:
-              // - Already expired
-              // - New timer is earlier
-              clearTimeout(backburner._laterTimer);
-
-              if (backburner._laterTimerExpiresAt < n) { // If timer was never triggered
-                // Calculate the left-over wait-time
-                wait = Math.max(0, executeAt - n);
-              }
-            }
-
-            backburner._laterTimer = global.setTimeout(function() {
-              backburner._laterTimer = null;
-              backburner._laterTimerExpiresAt = null;
-              executeTimers(backburner);
-            }, wait);
-
-            backburner._laterTimerExpiresAt = n + wait;
-          }
-        }
-
-        function executeTimers(backburner) {
-          var n = now();
-          var fns, i, l;
-
-          backburner.run(function() {
-            i = searchTimer(n, backburner._timers);
-
-            fns = backburner._timers.splice(0, i);
-
-            for (i = 1, l = fns.length; i < l; i += 2) {
-              backburner.schedule(backburner.options.defaultQueue, null, fns[i]);
-            }
-          });
-
-          if (backburner._timers.length) {
-            updateLaterTimer(backburner, backburner._timers[0], backburner._timers[0] - n);
-          }
-        }
-
-        function findDebouncee(target, method, debouncees) {
-          return findItem(target, method, debouncees);
-        }
-
-        function findThrottler(target, method, throttlers) {
-          return findItem(target, method, throttlers);
-        }
-
-        function findItem(target, method, collection) {
-          var item;
-          var index = -1;
-
-          for (var i = 0, l = collection.length; i < l; i++) {
-            item = collection[i];
-            if (item[0] === target && item[1] === method) {
-              index = i;
-              break;
+            if (item[2] === timer[2]) {
+              array.splice(index, 1);
+              clearTimeout(timer[2]);
+              return true;
             }
           }
 
-          return index;
+          return false;
+        }
+      };
+
+      Backburner.prototype.schedule = Backburner.prototype.defer;
+      Backburner.prototype.scheduleOnce = Backburner.prototype.deferOnce;
+      Backburner.prototype.later = Backburner.prototype.setTimeout;
+
+      if (needsIETryCatchFix) {
+        var originalRun = Backburner.prototype.run;
+        Backburner.prototype.run = wrapInTryCatch(originalRun);
+
+        var originalEnd = Backburner.prototype.end;
+        Backburner.prototype.end = wrapInTryCatch(originalEnd);
+      }
+
+      function getOnError(options) {
+        return options.onError || (options.onErrorTarget && options.onErrorTarget[options.onErrorMethod]);
+      }
+
+      function createAutorun(backburner) {
+        backburner.begin();
+        backburner._autorun = global.setTimeout(function() {
+          backburner._autorun = null;
+          backburner.end();
+        });
+      }
+
+      function updateLaterTimer(backburner, executeAt, wait) {
+        var n = now();
+        if (!backburner._laterTimer || executeAt < backburner._laterTimerExpiresAt || backburner._laterTimerExpiresAt < n) {
+
+          if (backburner._laterTimer) {
+            // Clear when:
+            // - Already expired
+            // - New timer is earlier
+            clearTimeout(backburner._laterTimer);
+
+            if (backburner._laterTimerExpiresAt < n) { // If timer was never triggered
+              // Calculate the left-over wait-time
+              wait = Math.max(0, executeAt - n);
+            }
+          }
+
+          backburner._laterTimer = global.setTimeout(function() {
+            backburner._laterTimer = null;
+            backburner._laterTimerExpiresAt = null;
+            executeTimers(backburner);
+          }, wait);
+
+          backburner._laterTimerExpiresAt = n + wait;
+        }
+      }
+
+      function executeTimers(backburner) {
+        var n = now();
+        var fns, i, l;
+
+        backburner.run(function() {
+          i = searchTimer(n, backburner._timers);
+
+          fns = backburner._timers.splice(0, i);
+
+          for (i = 1, l = fns.length; i < l; i += 2) {
+            backburner.schedule(backburner.options.defaultQueue, null, fns[i]);
+          }
+        });
+
+        if (backburner._timers.length) {
+          updateLaterTimer(backburner, backburner._timers[0], backburner._timers[0] - n);
+        }
+      }
+
+      function findDebouncee(target, method, debouncees) {
+        return findItem(target, method, debouncees);
+      }
+
+      function findThrottler(target, method, throttlers) {
+        return findItem(target, method, throttlers);
+      }
+
+      function findItem(target, method, collection) {
+        var item;
+        var index = -1;
+
+        for (var i = 0, l = collection.length; i < l; i++) {
+          item = collection[i];
+          if (item[0] === target && item[1] === method) {
+            index = i;
+            break;
+          }
         }
 
-        __exports__["default"] = Backburner;
-      });
+        return index;
+      }
+
+      __exports__["default"] = Backburner;
+    });
   enifed("backburner.umd",
-      ["./backburner"],
-      function(__dependency1__) {
-        "use strict";
-        var Backburner = __dependency1__["default"];
+    ["./backburner"],
+    function(__dependency1__) {
+      "use strict";
+      var Backburner = __dependency1__["default"];
 
-        /* global define:true module:true window: true */
-        if (typeof enifed === 'function' && enifed.amd) {
-          enifed(function() { return Backburner; });
-        } else if (typeof module !== 'undefined' && module.exports) {
-          module.exports = Backburner;
-        } else if (typeof this !== 'undefined') {
-          this['Backburner'] = Backburner;
-        }
-      });
+      /* global define:true module:true window: true */
+      if (typeof enifed === 'function' && enifed.amd) {
+        enifed(function() { return Backburner; });
+      } else if (typeof module !== 'undefined' && module.exports) {
+        module.exports = Backburner;
+      } else if (typeof this !== 'undefined') {
+        this['Backburner'] = Backburner;
+      }
+    });
   enifed("backburner/binary-search",
-      ["exports"],
-      function(__exports__) {
-        "use strict";
-        __exports__["default"] = function binarySearch(time, timers) {
-          var start = 0;
-          var end = timers.length - 2;
-          var middle, l;
+    ["exports"],
+    function(__exports__) {
+      "use strict";
+      __exports__["default"] = function binarySearch(time, timers) {
+        var start = 0;
+        var end = timers.length - 2;
+        var middle, l;
 
-          while (start < end) {
-            // since timers is an array of pairs 'l' will always
-            // be an integer
-            l = (end - start) / 2;
+        while (start < end) {
+          // since timers is an array of pairs 'l' will always
+          // be an integer
+          l = (end - start) / 2;
 
-            // compensate for the index in case even number
-            // of pairs inside timers
-            middle = start + l - (l % 2);
+          // compensate for the index in case even number
+          // of pairs inside timers
+          middle = start + l - (l % 2);
 
-            if (time >= timers[middle]) {
-              start = middle + 2;
-            } else {
-              end = middle;
-            }
+          if (time >= timers[middle]) {
+            start = middle + 2;
+          } else {
+            end = middle;
           }
-
-          return (time >= timers[start]) ? start + 2 : start;
         }
-      });
+
+        return (time >= timers[start]) ? start + 2 : start;
+      }
+    });
   enifed("backburner/deferred-action-queues",
-      ["./utils","./queue","exports"],
-      function(__dependency1__, __dependency2__, __exports__) {
-        "use strict";
-        var each = __dependency1__.each;
-        var Queue = __dependency2__["default"];
+    ["./utils","./queue","exports"],
+    function(__dependency1__, __dependency2__, __exports__) {
+      "use strict";
+      var each = __dependency1__.each;
+      var Queue = __dependency2__["default"];
 
-        function DeferredActionQueues(queueNames, options) {
-          var queues = this.queues = Object.create(null);
-          this.queueNames = queueNames = queueNames || [];
+      function DeferredActionQueues(queueNames, options) {
+        var queues = this.queues = Object.create(null);
+        this.queueNames = queueNames = queueNames || [];
 
-          this.options = options;
+        this.options = options;
 
-          each(queueNames, function(queueName) {
-            queues[queueName] = new Queue(queueName, options[queueName], options);
-          });
-        }
+        each(queueNames, function(queueName) {
+          queues[queueName] = new Queue(queueName, options[queueName], options);
+        });
+      }
 
-        function noSuchQueue(name) {
-          throw new Error("You attempted to schedule an action in a queue (" + name + ") that doesn't exist");
-        }
+      function noSuchQueue(name) {
+        throw new Error("You attempted to schedule an action in a queue (" + name + ") that doesn't exist");
+      }
 
-        DeferredActionQueues.prototype = {
-          schedule: function(name, target, method, args, onceFlag, stack) {
-            var queues = this.queues;
-            var queue = queues[name];
+      DeferredActionQueues.prototype = {
+        schedule: function(name, target, method, args, onceFlag, stack) {
+          var queues = this.queues;
+          var queue = queues[name];
 
-            if (!queue) {
-              noSuchQueue(name);
-            }
+          if (!queue) {
+            noSuchQueue(name);
+          }
 
-            if (onceFlag) {
-              return queue.pushUnique(target, method, args, stack);
+          if (onceFlag) {
+            return queue.pushUnique(target, method, args, stack);
+          } else {
+            return queue.push(target, method, args, stack);
+          }
+        },
+
+        flush: function() {
+          var queues = this.queues;
+          var queueNames = this.queueNames;
+          var queueName, queue, queueItems, priorQueueNameIndex;
+          var queueNameIndex = 0;
+          var numberOfQueues = queueNames.length;
+          var options = this.options;
+
+          while (queueNameIndex < numberOfQueues) {
+            queueName = queueNames[queueNameIndex];
+            queue = queues[queueName];
+
+            var numberOfQueueItems = queue._queue.length;
+
+            if (numberOfQueueItems === 0) {
+              queueNameIndex++;
             } else {
-              return queue.push(target, method, args, stack);
-            }
-          },
-
-          flush: function() {
-            var queues = this.queues;
-            var queueNames = this.queueNames;
-            var queueName, queue, queueItems, priorQueueNameIndex;
-            var queueNameIndex = 0;
-            var numberOfQueues = queueNames.length;
-            var options = this.options;
-
-            while (queueNameIndex < numberOfQueues) {
-              queueName = queueNames[queueNameIndex];
-              queue = queues[queueName];
-
-              var numberOfQueueItems = queue._queue.length;
-
-              if (numberOfQueueItems === 0) {
-                queueNameIndex++;
-              } else {
-                queue.flush(false /* async */);
-                queueNameIndex = 0;
-              }
+              queue.flush(false /* async */);
+              queueNameIndex = 0;
             }
           }
-        };
-
-        __exports__["default"] = DeferredActionQueues;
-      });
-  enifed("backburner/platform",
-      ["exports"],
-      function(__exports__) {
-        "use strict";
-        // In IE 6-8, try/finally doesn't work without a catch.
-        // Unfortunately, this is impossible to test for since wrapping it in a parent try/catch doesn't trigger the bug.
-        // This tests for another broken try/catch behavior that only exhibits in the same versions of IE.
-        var needsIETryCatchFix = (function(e,x){
-          try{ x(); }
-          catch(e) { } // jshint ignore:line
-          return !!e;
-        })();
-        __exports__.needsIETryCatchFix = needsIETryCatchFix;
-      });
-  enifed("backburner/queue",
-      ["./utils","exports"],
-      function(__dependency1__, __exports__) {
-        "use strict";
-        var isString = __dependency1__.isString;
-
-        function Queue(name, options, globalOptions) {
-          this.name = name;
-          this.globalOptions = globalOptions || {};
-          this.options = options;
-          this._queue = [];
-          this.targetQueues = Object.create(null);
-          this._queueBeingFlushed = undefined;
         }
+      };
 
-        Queue.prototype = {
-          push: function(target, method, args, stack) {
-            var queue = this._queue;
-            queue.push(target, method, args, stack);
+      __exports__["default"] = DeferredActionQueues;
+    });
+  enifed("backburner/platform",
+    ["exports"],
+    function(__exports__) {
+      "use strict";
+      // In IE 6-8, try/finally doesn't work without a catch.
+      // Unfortunately, this is impossible to test for since wrapping it in a parent try/catch doesn't trigger the bug.
+      // This tests for another broken try/catch behavior that only exhibits in the same versions of IE.
+      var needsIETryCatchFix = (function(e,x){
+        try{ x(); }
+        catch(e) { } // jshint ignore:line
+        return !!e;
+      })();
+      __exports__.needsIETryCatchFix = needsIETryCatchFix;
+    });
+  enifed("backburner/queue",
+    ["./utils","exports"],
+    function(__dependency1__, __exports__) {
+      "use strict";
+      var isString = __dependency1__.isString;
 
-            return {
-              queue: this,
-              target: target,
-              method: method
-            };
-          },
+      function Queue(name, options, globalOptions) {
+        this.name = name;
+        this.globalOptions = globalOptions || {};
+        this.options = options;
+        this._queue = [];
+        this.targetQueues = Object.create(null);
+        this._queueBeingFlushed = undefined;
+      }
 
-          pushUniqueWithoutGuid: function(target, method, args, stack) {
-            var queue = this._queue;
+      Queue.prototype = {
+        push: function(target, method, args, stack) {
+          var queue = this._queue;
+          queue.push(target, method, args, stack);
 
-            for (var i = 0, l = queue.length; i < l; i += 4) {
-              var currentTarget = queue[i];
-              var currentMethod = queue[i+1];
+          return {
+            queue: this,
+            target: target,
+            method: method
+          };
+        },
 
-              if (currentTarget === target && currentMethod === method) {
-                queue[i+2] = args;  // replace args
-                queue[i+3] = stack; // replace stack
-                return;
-              }
+        pushUniqueWithoutGuid: function(target, method, args, stack) {
+          var queue = this._queue;
+
+          for (var i = 0, l = queue.length; i < l; i += 4) {
+            var currentTarget = queue[i];
+            var currentMethod = queue[i+1];
+
+            if (currentTarget === target && currentMethod === method) {
+              queue[i+2] = args;  // replace args
+              queue[i+3] = stack; // replace stack
+              return;
             }
+          }
 
-            queue.push(target, method, args, stack);
-          },
+          queue.push(target, method, args, stack);
+        },
 
-          targetQueue: function(targetQueue, target, method, args, stack) {
-            var queue = this._queue;
+        targetQueue: function(targetQueue, target, method, args, stack) {
+          var queue = this._queue;
 
-            for (var i = 0, l = targetQueue.length; i < l; i += 4) {
-              var currentMethod = targetQueue[i];
-              var currentIndex  = targetQueue[i + 1];
+          for (var i = 0, l = targetQueue.length; i < l; i += 4) {
+            var currentMethod = targetQueue[i];
+            var currentIndex  = targetQueue[i + 1];
 
-              if (currentMethod === method) {
-                queue[currentIndex + 2] = args;  // replace args
-                queue[currentIndex + 3] = stack; // replace stack
-                return;
-              }
+            if (currentMethod === method) {
+              queue[currentIndex + 2] = args;  // replace args
+              queue[currentIndex + 3] = stack; // replace stack
+              return;
             }
+          }
 
-            targetQueue.push(
-                method,
-                queue.push(target, method, args, stack) - 4
-            );
-          },
+          targetQueue.push(
+            method,
+            queue.push(target, method, args, stack) - 4
+          );
+        },
 
-          pushUniqueWithGuid: function(guid, target, method, args, stack) {
-            var hasLocalQueue = this.targetQueues[guid];
+        pushUniqueWithGuid: function(guid, target, method, args, stack) {
+          var hasLocalQueue = this.targetQueues[guid];
 
-            if (hasLocalQueue) {
-              this.targetQueue(hasLocalQueue, target, method, args, stack);
-            } else {
-              this.targetQueues[guid] = [
-                method,
-                this._queue.push(target, method, args, stack) - 4
-              ];
+          if (hasLocalQueue) {
+            this.targetQueue(hasLocalQueue, target, method, args, stack);
+          } else {
+            this.targetQueues[guid] = [
+              method,
+              this._queue.push(target, method, args, stack) - 4
+            ];
+          }
+
+          return {
+            queue: this,
+            target: target,
+            method: method
+          };
+        },
+
+        pushUnique: function(target, method, args, stack) {
+          var queue = this._queue, currentTarget, currentMethod, i, l;
+          var KEY = this.globalOptions.GUID_KEY;
+
+          if (target && KEY) {
+            var guid = target[KEY];
+            if (guid) {
+              return this.pushUniqueWithGuid(guid, target, method, args, stack);
             }
+          }
 
-            return {
-              queue: this,
-              target: target,
-              method: method
-            };
-          },
+          this.pushUniqueWithoutGuid(target, method, args, stack);
 
-          pushUnique: function(target, method, args, stack) {
-            var queue = this._queue, currentTarget, currentMethod, i, l;
-            var KEY = this.globalOptions.GUID_KEY;
+          return {
+            queue: this,
+            target: target,
+            method: method
+          };
+        },
 
-            if (target && KEY) {
-              var guid = target[KEY];
-              if (guid) {
-                return this.pushUniqueWithGuid(guid, target, method, args, stack);
-              }
-            }
+        invoke: function(target, method, args, _, _errorRecordedForStack) {
+          if (args && args.length > 0) {
+            method.apply(target, args);
+          } else {
+            method.call(target);
+          }
+        },
 
-            this.pushUniqueWithoutGuid(target, method, args, stack);
-
-            return {
-              queue: this,
-              target: target,
-              method: method
-            };
-          },
-
-          invoke: function(target, method, args, _, _errorRecordedForStack) {
+        invokeWithOnError: function(target, method, args, onError, errorRecordedForStack) {
+          try {
             if (args && args.length > 0) {
               method.apply(target, args);
             } else {
               method.call(target);
             }
-          },
+          } catch(error) {
+            onError(error, errorRecordedForStack);
+          }
+        },
 
-          invokeWithOnError: function(target, method, args, onError, errorRecordedForStack) {
-            try {
-              if (args && args.length > 0) {
-                method.apply(target, args);
-              } else {
-                method.call(target);
-              }
-            } catch(error) {
-              onError(error, errorRecordedForStack);
-            }
-          },
+        flush: function(sync) {
+          var queue = this._queue;
+          var length = queue.length;
 
-          flush: function(sync) {
-            var queue = this._queue;
-            var length = queue.length;
+          if (length === 0) {
+            return;
+          }
 
-            if (length === 0) {
-              return;
-            }
+          var globalOptions = this.globalOptions;
+          var options = this.options;
+          var before = options && options.before;
+          var after = options && options.after;
+          var onError = globalOptions.onError || (globalOptions.onErrorTarget &&
+            globalOptions.onErrorTarget[globalOptions.onErrorMethod]);
+          var target, method, args, errorRecordedForStack;
+          var invoke = onError ? this.invokeWithOnError : this.invoke;
 
-            var globalOptions = this.globalOptions;
-            var options = this.options;
-            var before = options && options.before;
-            var after = options && options.after;
-            var onError = globalOptions.onError || (globalOptions.onErrorTarget &&
-                globalOptions.onErrorTarget[globalOptions.onErrorMethod]);
-            var target, method, args, errorRecordedForStack;
-            var invoke = onError ? this.invokeWithOnError : this.invoke;
+          this.targetQueues = Object.create(null);
+          var queueItems = this._queueBeingFlushed = this._queue.slice();
+          this._queue = [];
 
-            this.targetQueues = Object.create(null);
-            var queueItems = this._queueBeingFlushed = this._queue.slice();
-            this._queue = [];
+          if (before) {
+            before();
+          }
 
-            if (before) {
-              before();
-            }
+          for (var i = 0; i < length; i += 4) {
+            target                = queueItems[i];
+            method                = queueItems[i+1];
+            args                  = queueItems[i+2];
+            errorRecordedForStack = queueItems[i+3]; // Debugging assistance
 
-            for (var i = 0; i < length; i += 4) {
-              target                = queueItems[i];
-              method                = queueItems[i+1];
-              args                  = queueItems[i+2];
-              errorRecordedForStack = queueItems[i+3]; // Debugging assistance
-
-              if (isString(method)) {
-                method = target[method];
-              }
-
-              // method could have been nullified / canceled during flush
-              if (method) {
-                //
-                //    ** Attention intrepid developer **
-                //
-                //    To find out the stack of this task when it was scheduled onto
-                //    the run loop, add the following to your app.js:
-                //
-                //    Ember.run.backburner.DEBUG = true; // NOTE: This slows your app, don't leave it on in production.
-                //
-                //    Once that is in place, when you are at a breakpoint and navigate
-                //    here in the stack explorer, you can look at `errorRecordedForStack.stack`,
-                //    which will be the captured stack when this job was scheduled.
-                //
-                invoke(target, method, args, onError, errorRecordedForStack);
-              }
+            if (isString(method)) {
+              method = target[method];
             }
 
-            if (after) {
-              after();
+            // method could have been nullified / canceled during flush
+            if (method) {
+              //
+              //    ** Attention intrepid developer **
+              //
+              //    To find out the stack of this task when it was scheduled onto
+              //    the run loop, add the following to your app.js:
+              //
+              //    Ember.run.backburner.DEBUG = true; // NOTE: This slows your app, don't leave it on in production.
+              //
+              //    Once that is in place, when you are at a breakpoint and navigate
+              //    here in the stack explorer, you can look at `errorRecordedForStack.stack`,
+              //    which will be the captured stack when this job was scheduled.
+              //
+              invoke(target, method, args, onError, errorRecordedForStack);
             }
+          }
 
-            this._queueBeingFlushed = undefined;
+          if (after) {
+            after();
+          }
 
-            if (sync !== false &&
-                this._queue.length > 0) {
-              // check if new items have been added
-              this.flush(true);
-            }
-          },
+          this._queueBeingFlushed = undefined;
 
-          cancel: function(actionToCancel) {
-            var queue = this._queue, currentTarget, currentMethod, i, l;
-            var target = actionToCancel.target;
-            var method = actionToCancel.method;
-            var GUID_KEY = this.globalOptions.GUID_KEY;
+          if (sync !== false &&
+            this._queue.length > 0) {
+            // check if new items have been added
+            this.flush(true);
+          }
+        },
 
-            if (GUID_KEY && this.targetQueues && target) {
-              var targetQueue = this.targetQueues[target[GUID_KEY]];
+        cancel: function(actionToCancel) {
+          var queue = this._queue, currentTarget, currentMethod, i, l;
+          var target = actionToCancel.target;
+          var method = actionToCancel.method;
+          var GUID_KEY = this.globalOptions.GUID_KEY;
 
-              if (targetQueue) {
-                for (i = 0, l = targetQueue.length; i < l; i++) {
-                  if (targetQueue[i] === method) {
-                    targetQueue.splice(i, 1);
-                  }
+          if (GUID_KEY && this.targetQueues && target) {
+            var targetQueue = this.targetQueues[target[GUID_KEY]];
+
+            if (targetQueue) {
+              for (i = 0, l = targetQueue.length; i < l; i++) {
+                if (targetQueue[i] === method) {
+                  targetQueue.splice(i, 1);
                 }
               }
             }
+          }
 
-            for (i = 0, l = queue.length; i < l; i += 4) {
-              currentTarget = queue[i];
-              currentMethod = queue[i+1];
+          for (i = 0, l = queue.length; i < l; i += 4) {
+            currentTarget = queue[i];
+            currentMethod = queue[i+1];
 
-              if (currentTarget === target &&
-                  currentMethod === method) {
-                queue.splice(i, 4);
-                return true;
-              }
-            }
-
-            // if not found in current queue
-            // could be in the queue that is being flushed
-            queue = this._queueBeingFlushed;
-
-            if (!queue) {
-              return;
-            }
-
-            for (i = 0, l = queue.length; i < l; i += 4) {
-              currentTarget = queue[i];
-              currentMethod = queue[i+1];
-
-              if (currentTarget === target &&
-                  currentMethod === method) {
-                // don't mess with array during flush
-                // just nullify the method
-                queue[i+1] = null;
-                return true;
-              }
+            if (currentTarget === target &&
+              currentMethod === method) {
+              queue.splice(i, 4);
+              return true;
             }
           }
-        };
 
-        __exports__["default"] = Queue;
-      });
+          // if not found in current queue
+          // could be in the queue that is being flushed
+          queue = this._queueBeingFlushed;
+
+          if (!queue) {
+            return;
+          }
+
+          for (i = 0, l = queue.length; i < l; i += 4) {
+            currentTarget = queue[i];
+            currentMethod = queue[i+1];
+
+            if (currentTarget === target &&
+              currentMethod === method) {
+              // don't mess with array during flush
+              // just nullify the method
+              queue[i+1] = null;
+              return true;
+            }
+          }
+        }
+      };
+
+      __exports__["default"] = Queue;
+    });
   enifed("backburner/utils",
-      ["exports"],
-      function(__exports__) {
-        "use strict";
-        var NUMBER = /\d+/;
+    ["exports"],
+    function(__exports__) {
+      "use strict";
+      var NUMBER = /\d+/;
 
-        function each(collection, callback) {
-          for (var i = 0; i < collection.length; i++) {
-            callback(collection[i]);
-          }
+      function each(collection, callback) {
+        for (var i = 0; i < collection.length; i++) {
+          callback(collection[i]);
         }
+      }
 
-        __exports__.each = each;// Date.now is not available in browsers < IE9
-        // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Date/now#Compatibility
-        var now = Date.now || function() { return new Date().getTime(); };
-        __exports__.now = now;
-        function isString(suspect) {
-          return typeof suspect === 'string';
-        }
+      __exports__.each = each;// Date.now is not available in browsers < IE9
+      // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Date/now#Compatibility
+      var now = Date.now || function() { return new Date().getTime(); };
+      __exports__.now = now;
+      function isString(suspect) {
+        return typeof suspect === 'string';
+      }
 
-        __exports__.isString = isString;function isFunction(suspect) {
-          return typeof suspect === 'function';
-        }
+      __exports__.isString = isString;function isFunction(suspect) {
+        return typeof suspect === 'function';
+      }
 
-        __exports__.isFunction = isFunction;function isNumber(suspect) {
-          return typeof suspect === 'number';
-        }
+      __exports__.isFunction = isFunction;function isNumber(suspect) {
+        return typeof suspect === 'number';
+      }
 
-        __exports__.isNumber = isNumber;function isCoercableNumber(number) {
-          return isNumber(number) || NUMBER.test(number);
-        }
+      __exports__.isNumber = isNumber;function isCoercableNumber(number) {
+        return isNumber(number) || NUMBER.test(number);
+      }
 
-        __exports__.isCoercableNumber = isCoercableNumber;function wrapInTryCatch(func) {
-          return function () {
-            try {
-              return func.apply(this, arguments);
-            } catch (e) {
-              throw e;
-            }
-          };
-        }
-
-        __exports__.wrapInTryCatch = wrapInTryCatch;
-      });
-  enifed("calculateVersion",
-      [],
-      function() {
-        "use strict";
-        'use strict';
-
-        var fs   = eriuqer('fs');
-        var path = eriuqer('path');
-
-        module.exports = function () {
-          var packageVersion = eriuqer('../package.json').version;
-          var output         = [packageVersion];
-          var gitPath        = path.join(__dirname,'..','.git');
-          var headFilePath   = path.join(gitPath, 'HEAD');
-
-          if (packageVersion.indexOf('+') > -1) {
-            try {
-              if (fs.existsSync(headFilePath)) {
-                var headFile = fs.readFileSync(headFilePath, {encoding: 'utf8'});
-                var branchName = headFile.split('/').slice(-1)[0].trim();
-                var refPath = headFile.split(' ')[1];
-                var branchSHA;
-
-                if (refPath) {
-                  var branchPath = path.join(gitPath, refPath.trim());
-                  branchSHA  = fs.readFileSync(branchPath);
-                } else {
-                  branchSHA = branchName;
-                }
-
-                output.push(branchSHA.slice(0,10));
-              }
-            } catch (err) {
-              console.error(err.stack);
-            }
-            return output.join('.');
-          } else {
-            return packageVersion;
+      __exports__.isCoercableNumber = isCoercableNumber;function wrapInTryCatch(func) {
+        return function () {
+          try {
+            return func.apply(this, arguments);
+          } catch (e) {
+            throw e;
           }
         };
-      });
+      }
+
+      __exports__.wrapInTryCatch = wrapInTryCatch;
+    });
+  enifed("calculateVersion",
+    [],
+    function() {
+      "use strict";
+      'use strict';
+
+      var fs   = eriuqer('fs');
+      var path = eriuqer('path');
+
+      module.exports = function () {
+        var packageVersion = eriuqer('../package.json').version;
+        var output         = [packageVersion];
+        var gitPath        = path.join(__dirname,'..','.git');
+        var headFilePath   = path.join(gitPath, 'HEAD');
+
+        if (packageVersion.indexOf('+') > -1) {
+          try {
+            if (fs.existsSync(headFilePath)) {
+              var headFile = fs.readFileSync(headFilePath, {encoding: 'utf8'});
+              var branchName = headFile.split('/').slice(-1)[0].trim();
+              var refPath = headFile.split(' ')[1];
+              var branchSHA;
+
+              if (refPath) {
+                var branchPath = path.join(gitPath, refPath.trim());
+                branchSHA  = fs.readFileSync(branchPath);
+              } else {
+                branchSHA = branchName;
+              }
+
+              output.push(branchSHA.slice(0,10));
+            }
+          } catch (err) {
+            console.error(err.stack);
+          }
+          return output.join('.');
+        } else {
+          return packageVersion;
+        }
+      };
+    });
   enifed('container', ['exports', 'container/registry', 'container/container'], function (exports, Registry, Container) {
 
     'use strict';
@@ -1131,15 +1131,15 @@
      */
     function Container(registry, options) {
       this._registry = registry || (function () {
-            Ember['default'].deprecate("A container should only be created for an already instantiated " + "registry. For backward compatibility, an isolated registry will " + "be instantiated just for this container.");
+          Ember['default'].deprecate("A container should only be created for an already instantiated " + "registry. For backward compatibility, an isolated registry will " + "be instantiated just for this container.");
 
-            // TODO - See note above about transpiler import workaround.
-            if (!Registry) {
-              Registry = requireModule('container/registry')['default'];
-            }
+          // TODO - See note above about transpiler import workaround.
+          if (!Registry) {
+            Registry = requireModule('container/registry')['default'];
+          }
 
-            return new Registry();
-          })();
+          return new Registry();
+        })();
 
       this.cache = dictionary['default'](options && options.cache ? options.cache : null);
       this.factoryCache = dictionary['default'](options && options.factoryCache ? options.factoryCache : null);
@@ -2120,1073 +2120,1073 @@
 
   });
   enifed("dag-map",
-      ["exports"],
-      function(__exports__) {
-        "use strict";
-        function visit(vertex, fn, visited, path) {
-          var name = vertex.name;
-          var vertices = vertex.incoming;
-          var names = vertex.incomingNames;
-          var len = names.length;
-          var i;
+    ["exports"],
+    function(__exports__) {
+      "use strict";
+      function visit(vertex, fn, visited, path) {
+        var name = vertex.name;
+        var vertices = vertex.incoming;
+        var names = vertex.incomingNames;
+        var len = names.length;
+        var i;
 
-          if (!visited) {
-            visited = {};
-          }
-          if (!path) {
-            path = [];
-          }
-          if (visited.hasOwnProperty(name)) {
-            return;
-          }
-          path.push(name);
-          visited[name] = true;
-          for (i = 0; i < len; i++) {
-            visit(vertices[names[i]], fn, visited, path);
-          }
-          fn(vertex, path);
-          path.pop();
+        if (!visited) {
+          visited = {};
         }
-
-
-        /**
-         * DAG stands for Directed acyclic graph.
-         *
-         * It is used to build a graph of dependencies checking that there isn't circular
-         * dependencies. p.e Registering initializers with a certain precedence order.
-         *
-         * @class DAG
-         * @constructor
-         */
-        function DAG() {
-          this.names = [];
-          this.vertices = Object.create(null);
+        if (!path) {
+          path = [];
         }
-
-        /**
-         * DAG Vertex
-         *
-         * @class Vertex
-         * @constructor
-         */
-
-        function Vertex(name) {
-          this.name = name;
-          this.incoming = {};
-          this.incomingNames = [];
-          this.hasOutgoing = false;
-          this.value = null;
+        if (visited.hasOwnProperty(name)) {
+          return;
         }
-
-        /**
-         * Adds a vertex entry to the graph unless it is already added.
-         *
-         * @private
-         * @method add
-         * @param {String} name The name of the vertex to add
-         */
-        DAG.prototype.add = function(name) {
-          if (!name) {
-            throw new Error("Can't add Vertex without name");
-          }
-          if (this.vertices[name] !== undefined) {
-            return this.vertices[name];
-          }
-          var vertex = new Vertex(name);
-          this.vertices[name] = vertex;
-          this.names.push(name);
-          return vertex;
-        };
-
-        /**
-         * Adds a vertex to the graph and sets its value.
-         *
-         * @private
-         * @method map
-         * @param {String} name The name of the vertex.
-         * @param         value The value to put in the vertex.
-         */
-        DAG.prototype.map = function(name, value) {
-          this.add(name).value = value;
-        };
-
-        /**
-         * Connects the vertices with the given names, adding them to the graph if
-         * necessary, only if this does not produce is any circular dependency.
-         *
-         * @private
-         * @method addEdge
-         * @param {String} fromName The name the vertex where the edge starts.
-         * @param {String} toName The name the vertex where the edge ends.
-         */
-        DAG.prototype.addEdge = function(fromName, toName) {
-          if (!fromName || !toName || fromName === toName) {
-            return;
-          }
-          var from = this.add(fromName);
-          var to = this.add(toName);
-          if (to.incoming.hasOwnProperty(fromName)) {
-            return;
-          }
-          function checkCycle(vertex, path) {
-            if (vertex.name === toName) {
-              throw new Error("cycle detected: " + toName + " <- " + path.join(" <- "));
-            }
-          }
-          visit(from, checkCycle);
-          from.hasOutgoing = true;
-          to.incoming[fromName] = from;
-          to.incomingNames.push(fromName);
-        };
-
-        /**
-         * Visits all the vertex of the graph calling the given function with each one,
-         * ensuring that the vertices are visited respecting their precedence.
-         *
-         * @method  topsort
-         * @param {Function} fn The function to be invoked on each vertex.
-         */
-        DAG.prototype.topsort = function(fn) {
-          var visited = {};
-          var vertices = this.vertices;
-          var names = this.names;
-          var len = names.length;
-          var i, vertex;
-
-          for (i = 0; i < len; i++) {
-            vertex = vertices[names[i]];
-            if (!vertex.hasOutgoing) {
-              visit(vertex, fn, visited);
-            }
-          }
-        };
-
-        /**
-         * Adds a vertex with the given name and value to the graph and joins it with the
-         * vertices referenced in _before_ and _after_. If there isn't vertices with those
-         * names, they are added too.
-         *
-         * If either _before_ or _after_ are falsy/empty, the added vertex will not have
-         * an incoming/outgoing edge.
-         *
-         * @method addEdges
-         * @param {String} name The name of the vertex to be added.
-         * @param         value The value of that vertex.
-         * @param        before An string or array of strings with the names of the vertices before
-         *                      which this vertex must be visited.
-         * @param         after An string or array of strings with the names of the vertex after
-         *                      which this vertex must be visited.
-         *
-         */
-        DAG.prototype.addEdges = function(name, value, before, after) {
-          var i;
-          this.map(name, value);
-          if (before) {
-            if (typeof before === 'string') {
-              this.addEdge(name, before);
-            } else {
-              for (i = 0; i < before.length; i++) {
-                this.addEdge(name, before[i]);
-              }
-            }
-          }
-          if (after) {
-            if (typeof after === 'string') {
-              this.addEdge(after, name);
-            } else {
-              for (i = 0; i < after.length; i++) {
-                this.addEdge(after[i], name);
-              }
-            }
-          }
-        };
-
-        __exports__["default"] = DAG;
-      });
-  enifed("dag-map.umd",
-      ["./dag-map"],
-      function(__dependency1__) {
-        "use strict";
-        var DAG = __dependency1__["default"];
-
-        /* global define:true module:true window: true */
-        if (typeof enifed === 'function' && enifed.amd) {
-          enifed(function() { return DAG; });
-        } else if (typeof module !== 'undefined' && module.exports) {
-          module.exports = DAG;
-        } else if (typeof this !== 'undefined') {
-          this['DAG'] = DAG;
+        path.push(name);
+        visited[name] = true;
+        for (i = 0; i < len; i++) {
+          visit(vertices[names[i]], fn, visited, path);
         }
-      });
-  enifed("dom-helper",
-      ["./morph-range","./morph-attr","./dom-helper/build-html-dom","./dom-helper/classes","./dom-helper/prop","exports"],
-      function(__dependency1__, __dependency2__, __dependency3__, __dependency4__, __dependency5__, __exports__) {
-        "use strict";
-        var Morph = __dependency1__["default"];
-        var AttrMorph = __dependency2__["default"];
-        var buildHTMLDOM = __dependency3__.buildHTMLDOM;
-        var svgNamespace = __dependency3__.svgNamespace;
-        var svgHTMLIntegrationPoints = __dependency3__.svgHTMLIntegrationPoints;
-        var addClasses = __dependency4__.addClasses;
-        var removeClasses = __dependency4__.removeClasses;
-        var normalizeProperty = __dependency5__.normalizeProperty;
-        var isAttrRemovalValue = __dependency5__.isAttrRemovalValue;
+        fn(vertex, path);
+        path.pop();
+      }
 
-        var doc = typeof document === 'undefined' ? false : document;
 
-        var deletesBlankTextNodes = doc && (function(document){
-              var element = document.createElement('div');
-              element.appendChild( document.createTextNode('') );
-              var clonedElement = element.cloneNode(true);
-              return clonedElement.childNodes.length === 0;
-            })(doc);
+      /**
+       * DAG stands for Directed acyclic graph.
+       *
+       * It is used to build a graph of dependencies checking that there isn't circular
+       * dependencies. p.e Registering initializers with a certain precedence order.
+       *
+       * @class DAG
+       * @constructor
+       */
+      function DAG() {
+        this.names = [];
+        this.vertices = Object.create(null);
+      }
 
-        var ignoresCheckedAttribute = doc && (function(document){
-              var element = document.createElement('input');
-              element.setAttribute('checked', 'checked');
-              var clonedElement = element.cloneNode(false);
-              return !clonedElement.checked;
-            })(doc);
+      /**
+       * DAG Vertex
+       *
+       * @class Vertex
+       * @constructor
+       */
 
-        var canRemoveSvgViewBoxAttribute = doc && (doc.createElementNS ? (function(document){
-              var element = document.createElementNS(svgNamespace, 'svg');
-              element.setAttribute('viewBox', '0 0 100 100');
-              element.removeAttribute('viewBox');
-              return !element.getAttribute('viewBox');
-            })(doc) : true);
+      function Vertex(name) {
+        this.name = name;
+        this.incoming = {};
+        this.incomingNames = [];
+        this.hasOutgoing = false;
+        this.value = null;
+      }
 
-        var canClone = doc && (function(document){
-              var element = document.createElement('div');
-              element.appendChild( document.createTextNode(' '));
-              element.appendChild( document.createTextNode(' '));
-              var clonedElement = element.cloneNode(true);
-              return clonedElement.childNodes[0].nodeValue === ' ';
-            })(doc);
+      /**
+       * Adds a vertex entry to the graph unless it is already added.
+       *
+       * @private
+       * @method add
+       * @param {String} name The name of the vertex to add
+       */
+      DAG.prototype.add = function(name) {
+        if (!name) {
+          throw new Error("Can't add Vertex without name");
+        }
+        if (this.vertices[name] !== undefined) {
+          return this.vertices[name];
+        }
+        var vertex = new Vertex(name);
+        this.vertices[name] = vertex;
+        this.names.push(name);
+        return vertex;
+      };
 
-        // This is not the namespace of the element, but of
-        // the elements inside that elements.
-        function interiorNamespace(element){
-          if (
-              element &&
-              element.namespaceURI === svgNamespace &&
-              !svgHTMLIntegrationPoints[element.tagName]
-          ) {
-            return svgNamespace;
+      /**
+       * Adds a vertex to the graph and sets its value.
+       *
+       * @private
+       * @method map
+       * @param {String} name The name of the vertex.
+       * @param         value The value to put in the vertex.
+       */
+      DAG.prototype.map = function(name, value) {
+        this.add(name).value = value;
+      };
+
+      /**
+       * Connects the vertices with the given names, adding them to the graph if
+       * necessary, only if this does not produce is any circular dependency.
+       *
+       * @private
+       * @method addEdge
+       * @param {String} fromName The name the vertex where the edge starts.
+       * @param {String} toName The name the vertex where the edge ends.
+       */
+      DAG.prototype.addEdge = function(fromName, toName) {
+        if (!fromName || !toName || fromName === toName) {
+          return;
+        }
+        var from = this.add(fromName);
+        var to = this.add(toName);
+        if (to.incoming.hasOwnProperty(fromName)) {
+          return;
+        }
+        function checkCycle(vertex, path) {
+          if (vertex.name === toName) {
+            throw new Error("cycle detected: " + toName + " <- " + path.join(" <- "));
+          }
+        }
+        visit(from, checkCycle);
+        from.hasOutgoing = true;
+        to.incoming[fromName] = from;
+        to.incomingNames.push(fromName);
+      };
+
+      /**
+       * Visits all the vertex of the graph calling the given function with each one,
+       * ensuring that the vertices are visited respecting their precedence.
+       *
+       * @method  topsort
+       * @param {Function} fn The function to be invoked on each vertex.
+       */
+      DAG.prototype.topsort = function(fn) {
+        var visited = {};
+        var vertices = this.vertices;
+        var names = this.names;
+        var len = names.length;
+        var i, vertex;
+
+        for (i = 0; i < len; i++) {
+          vertex = vertices[names[i]];
+          if (!vertex.hasOutgoing) {
+            visit(vertex, fn, visited);
+          }
+        }
+      };
+
+      /**
+       * Adds a vertex with the given name and value to the graph and joins it with the
+       * vertices referenced in _before_ and _after_. If there isn't vertices with those
+       * names, they are added too.
+       *
+       * If either _before_ or _after_ are falsy/empty, the added vertex will not have
+       * an incoming/outgoing edge.
+       *
+       * @method addEdges
+       * @param {String} name The name of the vertex to be added.
+       * @param         value The value of that vertex.
+       * @param        before An string or array of strings with the names of the vertices before
+       *                      which this vertex must be visited.
+       * @param         after An string or array of strings with the names of the vertex after
+       *                      which this vertex must be visited.
+       *
+       */
+      DAG.prototype.addEdges = function(name, value, before, after) {
+        var i;
+        this.map(name, value);
+        if (before) {
+          if (typeof before === 'string') {
+            this.addEdge(name, before);
           } else {
-            return null;
-          }
-        }
-
-        // The HTML spec allows for "omitted start tags". These tags are optional
-        // when their intended child is the first thing in the parent tag. For
-        // example, this is a tbody start tag:
-        //
-        // <table>
-        //   <tbody>
-        //     <tr>
-        //
-        // The tbody may be omitted, and the browser will accept and render:
-        //
-        // <table>
-        //   <tr>
-        //
-        // However, the omitted start tag will still be added to the DOM. Here
-        // we test the string and context to see if the browser is about to
-        // perform this cleanup.
-        //
-        // http://www.whatwg.org/specs/web-apps/current-work/multipage/syntax.html#optional-tags
-        // describes which tags are omittable. The spec for tbody and colgroup
-        // explains this behavior:
-        //
-        // http://www.whatwg.org/specs/web-apps/current-work/multipage/tables.html#the-tbody-element
-        // http://www.whatwg.org/specs/web-apps/current-work/multipage/tables.html#the-colgroup-element
-        //
-
-        var omittedStartTagChildTest = /<([\w:]+)/;
-        function detectOmittedStartTag(string, contextualElement){
-          // Omitted start tags are only inside table tags.
-          if (contextualElement.tagName === 'TABLE') {
-            var omittedStartTagChildMatch = omittedStartTagChildTest.exec(string);
-            if (omittedStartTagChildMatch) {
-              var omittedStartTagChild = omittedStartTagChildMatch[1];
-              // It is already asserted that the contextual element is a table
-              // and not the proper start tag. Just see if a tag was omitted.
-              return omittedStartTagChild === 'tr' ||
-                  omittedStartTagChild === 'col';
+            for (i = 0; i < before.length; i++) {
+              this.addEdge(name, before[i]);
             }
           }
         }
-
-        function buildSVGDOM(html, dom){
-          var div = dom.document.createElement('div');
-          div.innerHTML = '<svg>'+html+'</svg>';
-          return div.firstChild.childNodes;
+        if (after) {
+          if (typeof after === 'string') {
+            this.addEdge(after, name);
+          } else {
+            for (i = 0; i < after.length; i++) {
+              this.addEdge(after[i], name);
+            }
+          }
         }
+      };
 
-        /*
-         * A class wrapping DOM functions to address environment compatibility,
-         * namespaces, contextual elements for morph un-escaped content
-         * insertion.
-         *
-         * When entering a template, a DOMHelper should be passed:
-         *
-         *   template(context, { hooks: hooks, dom: new DOMHelper() });
-         *
-         * TODO: support foreignObject as a passed contextual element. It has
-         * a namespace (svg) that does not match its internal namespace
-         * (xhtml).
-         *
-         * @class DOMHelper
-         * @constructor
-         * @param {HTMLDocument} _document The document DOM methods are proxied to
-         */
-        function DOMHelper(_document){
-          this.document = _document || document;
-          if (!this.document) {
-            throw new Error("A document object must be passed to the DOMHelper, or available on the global scope");
-          }
-          this.canClone = canClone;
-          this.namespace = null;
-        }
+      __exports__["default"] = DAG;
+    });
+  enifed("dag-map.umd",
+    ["./dag-map"],
+    function(__dependency1__) {
+      "use strict";
+      var DAG = __dependency1__["default"];
 
-        var prototype = DOMHelper.prototype;
-        prototype.constructor = DOMHelper;
+      /* global define:true module:true window: true */
+      if (typeof enifed === 'function' && enifed.amd) {
+        enifed(function() { return DAG; });
+      } else if (typeof module !== 'undefined' && module.exports) {
+        module.exports = DAG;
+      } else if (typeof this !== 'undefined') {
+        this['DAG'] = DAG;
+      }
+    });
+  enifed("dom-helper",
+    ["./morph-range","./morph-attr","./dom-helper/build-html-dom","./dom-helper/classes","./dom-helper/prop","exports"],
+    function(__dependency1__, __dependency2__, __dependency3__, __dependency4__, __dependency5__, __exports__) {
+      "use strict";
+      var Morph = __dependency1__["default"];
+      var AttrMorph = __dependency2__["default"];
+      var buildHTMLDOM = __dependency3__.buildHTMLDOM;
+      var svgNamespace = __dependency3__.svgNamespace;
+      var svgHTMLIntegrationPoints = __dependency3__.svgHTMLIntegrationPoints;
+      var addClasses = __dependency4__.addClasses;
+      var removeClasses = __dependency4__.removeClasses;
+      var normalizeProperty = __dependency5__.normalizeProperty;
+      var isAttrRemovalValue = __dependency5__.isAttrRemovalValue;
 
-        prototype.getElementById = function(id, rootNode) {
-          rootNode = rootNode || this.document;
-          return rootNode.getElementById(id);
-        };
+      var doc = typeof document === 'undefined' ? false : document;
 
-        prototype.insertBefore = function(element, childElement, referenceChild) {
-          return element.insertBefore(childElement, referenceChild);
-        };
+      var deletesBlankTextNodes = doc && (function(document){
+          var element = document.createElement('div');
+          element.appendChild( document.createTextNode('') );
+          var clonedElement = element.cloneNode(true);
+          return clonedElement.childNodes.length === 0;
+        })(doc);
 
-        prototype.appendChild = function(element, childElement) {
-          return element.appendChild(childElement);
-        };
+      var ignoresCheckedAttribute = doc && (function(document){
+          var element = document.createElement('input');
+          element.setAttribute('checked', 'checked');
+          var clonedElement = element.cloneNode(false);
+          return !clonedElement.checked;
+        })(doc);
 
-        prototype.childAt = function(element, indices) {
-          var child = element;
+      var canRemoveSvgViewBoxAttribute = doc && (doc.createElementNS ? (function(document){
+          var element = document.createElementNS(svgNamespace, 'svg');
+          element.setAttribute('viewBox', '0 0 100 100');
+          element.removeAttribute('viewBox');
+          return !element.getAttribute('viewBox');
+        })(doc) : true);
 
-          for (var i = 0; i < indices.length; i++) {
-            child = child.childNodes.item(indices[i]);
-          }
+      var canClone = doc && (function(document){
+          var element = document.createElement('div');
+          element.appendChild( document.createTextNode(' '));
+          element.appendChild( document.createTextNode(' '));
+          var clonedElement = element.cloneNode(true);
+          return clonedElement.childNodes[0].nodeValue === ' ';
+        })(doc);
 
-          return child;
-        };
-
-        // Note to a Fellow Implementor:
-        // Ahh, accessing a child node at an index. Seems like it should be so simple,
-        // doesn't it? Unfortunately, this particular method has caused us a surprising
-        // amount of pain. As you'll note below, this method has been modified to walk
-        // the linked list of child nodes rather than access the child by index
-        // directly, even though there are two (2) APIs in the DOM that do this for us.
-        // If you're thinking to yourself, "What an oversight! What an opportunity to
-        // optimize this code!" then to you I say: stop! For I have a tale to tell.
-        //
-        // First, this code must be compatible with simple-dom for rendering on the
-        // server where there is no real DOM. Previously, we accessed a child node
-        // directly via `element.childNodes[index]`. While we *could* in theory do a
-        // full-fidelity simulation of a live `childNodes` array, this is slow,
-        // complicated and error-prone.
-        //
-        // "No problem," we thought, "we'll just use the similar
-        // `childNodes.item(index)` API." Then, we could just implement our own `item`
-        // method in simple-dom and walk the child node linked list there, allowing
-        // us to retain the performance advantages of the (surely optimized) `item()`
-        // API in the browser.
-        //
-        // Unfortunately, an enterprising soul named Samy Alzahrani discovered that in
-        // IE8, accessing an item out-of-bounds via `item()` causes an exception where
-        // other browsers return null. This necessitated a... check of
-        // `childNodes.length`, bringing us back around to having to support a
-        // full-fidelity `childNodes` array!
-        //
-        // Worst of all, Kris Selden investigated how browsers are actualy implemented
-        // and discovered that they're all linked lists under the hood anyway. Accessing
-        // `childNodes` requires them to allocate a new live collection backed by that
-        // linked list, which is itself a rather expensive operation. Our assumed
-        // optimization had backfired! That is the danger of magical thinking about
-        // the performance of native implementations.
-        //
-        // And this, my friends, is why the following implementation just walks the
-        // linked list, as surprised as that may make you. Please ensure you understand
-        // the above before changing this and submitting a PR.
-        //
-        // Tom Dale, January 18th, 2015, Portland OR
-        prototype.childAtIndex = function(element, index) {
-          var node = element.firstChild;
-
-          for (var idx = 0; node && idx < index; idx++) {
-            node = node.nextSibling;
-          }
-
-          return node;
-        };
-
-        prototype.appendText = function(element, text) {
-          return element.appendChild(this.document.createTextNode(text));
-        };
-
-        prototype.setAttribute = function(element, name, value) {
-          element.setAttribute(name, String(value));
-        };
-
-        prototype.setAttributeNS = function(element, namespace, name, value) {
-          element.setAttributeNS(namespace, name, String(value));
-        };
-
-        if (canRemoveSvgViewBoxAttribute){
-          prototype.removeAttribute = function(element, name) {
-            element.removeAttribute(name);
-          };
+      // This is not the namespace of the element, but of
+      // the elements inside that elements.
+      function interiorNamespace(element){
+        if (
+          element &&
+          element.namespaceURI === svgNamespace &&
+          !svgHTMLIntegrationPoints[element.tagName]
+        ) {
+          return svgNamespace;
         } else {
-          prototype.removeAttribute = function(element, name) {
-            if (element.tagName === 'svg' && name === 'viewBox') {
-              element.setAttribute(name, null);
-            } else {
-              element.removeAttribute(name);
-            }
-          };
+          return null;
+        }
+      }
+
+      // The HTML spec allows for "omitted start tags". These tags are optional
+      // when their intended child is the first thing in the parent tag. For
+      // example, this is a tbody start tag:
+      //
+      // <table>
+      //   <tbody>
+      //     <tr>
+      //
+      // The tbody may be omitted, and the browser will accept and render:
+      //
+      // <table>
+      //   <tr>
+      //
+      // However, the omitted start tag will still be added to the DOM. Here
+      // we test the string and context to see if the browser is about to
+      // perform this cleanup.
+      //
+      // http://www.whatwg.org/specs/web-apps/current-work/multipage/syntax.html#optional-tags
+      // describes which tags are omittable. The spec for tbody and colgroup
+      // explains this behavior:
+      //
+      // http://www.whatwg.org/specs/web-apps/current-work/multipage/tables.html#the-tbody-element
+      // http://www.whatwg.org/specs/web-apps/current-work/multipage/tables.html#the-colgroup-element
+      //
+
+      var omittedStartTagChildTest = /<([\w:]+)/;
+      function detectOmittedStartTag(string, contextualElement){
+        // Omitted start tags are only inside table tags.
+        if (contextualElement.tagName === 'TABLE') {
+          var omittedStartTagChildMatch = omittedStartTagChildTest.exec(string);
+          if (omittedStartTagChildMatch) {
+            var omittedStartTagChild = omittedStartTagChildMatch[1];
+            // It is already asserted that the contextual element is a table
+            // and not the proper start tag. Just see if a tag was omitted.
+            return omittedStartTagChild === 'tr' ||
+              omittedStartTagChild === 'col';
+          }
+        }
+      }
+
+      function buildSVGDOM(html, dom){
+        var div = dom.document.createElement('div');
+        div.innerHTML = '<svg>'+html+'</svg>';
+        return div.firstChild.childNodes;
+      }
+
+      /*
+       * A class wrapping DOM functions to address environment compatibility,
+       * namespaces, contextual elements for morph un-escaped content
+       * insertion.
+       *
+       * When entering a template, a DOMHelper should be passed:
+       *
+       *   template(context, { hooks: hooks, dom: new DOMHelper() });
+       *
+       * TODO: support foreignObject as a passed contextual element. It has
+       * a namespace (svg) that does not match its internal namespace
+       * (xhtml).
+       *
+       * @class DOMHelper
+       * @constructor
+       * @param {HTMLDocument} _document The document DOM methods are proxied to
+       */
+      function DOMHelper(_document){
+        this.document = _document || document;
+        if (!this.document) {
+          throw new Error("A document object must be passed to the DOMHelper, or available on the global scope");
+        }
+        this.canClone = canClone;
+        this.namespace = null;
+      }
+
+      var prototype = DOMHelper.prototype;
+      prototype.constructor = DOMHelper;
+
+      prototype.getElementById = function(id, rootNode) {
+        rootNode = rootNode || this.document;
+        return rootNode.getElementById(id);
+      };
+
+      prototype.insertBefore = function(element, childElement, referenceChild) {
+        return element.insertBefore(childElement, referenceChild);
+      };
+
+      prototype.appendChild = function(element, childElement) {
+        return element.appendChild(childElement);
+      };
+
+      prototype.childAt = function(element, indices) {
+        var child = element;
+
+        for (var i = 0; i < indices.length; i++) {
+          child = child.childNodes.item(indices[i]);
         }
 
-        prototype.setPropertyStrict = function(element, name, value) {
-          element[name] = value;
-        };
+        return child;
+      };
 
-        prototype.setProperty = function(element, name, value, namespace) {
-          var lowercaseName = name.toLowerCase();
-          if (element.namespaceURI === svgNamespace || lowercaseName === 'style') {
+      // Note to a Fellow Implementor:
+      // Ahh, accessing a child node at an index. Seems like it should be so simple,
+      // doesn't it? Unfortunately, this particular method has caused us a surprising
+      // amount of pain. As you'll note below, this method has been modified to walk
+      // the linked list of child nodes rather than access the child by index
+      // directly, even though there are two (2) APIs in the DOM that do this for us.
+      // If you're thinking to yourself, "What an oversight! What an opportunity to
+      // optimize this code!" then to you I say: stop! For I have a tale to tell.
+      //
+      // First, this code must be compatible with simple-dom for rendering on the
+      // server where there is no real DOM. Previously, we accessed a child node
+      // directly via `element.childNodes[index]`. While we *could* in theory do a
+      // full-fidelity simulation of a live `childNodes` array, this is slow,
+      // complicated and error-prone.
+      //
+      // "No problem," we thought, "we'll just use the similar
+      // `childNodes.item(index)` API." Then, we could just implement our own `item`
+      // method in simple-dom and walk the child node linked list there, allowing
+      // us to retain the performance advantages of the (surely optimized) `item()`
+      // API in the browser.
+      //
+      // Unfortunately, an enterprising soul named Samy Alzahrani discovered that in
+      // IE8, accessing an item out-of-bounds via `item()` causes an exception where
+      // other browsers return null. This necessitated a... check of
+      // `childNodes.length`, bringing us back around to having to support a
+      // full-fidelity `childNodes` array!
+      //
+      // Worst of all, Kris Selden investigated how browsers are actualy implemented
+      // and discovered that they're all linked lists under the hood anyway. Accessing
+      // `childNodes` requires them to allocate a new live collection backed by that
+      // linked list, which is itself a rather expensive operation. Our assumed
+      // optimization had backfired! That is the danger of magical thinking about
+      // the performance of native implementations.
+      //
+      // And this, my friends, is why the following implementation just walks the
+      // linked list, as surprised as that may make you. Please ensure you understand
+      // the above before changing this and submitting a PR.
+      //
+      // Tom Dale, January 18th, 2015, Portland OR
+      prototype.childAtIndex = function(element, index) {
+        var node = element.firstChild;
+
+        for (var idx = 0; node && idx < index; idx++) {
+          node = node.nextSibling;
+        }
+
+        return node;
+      };
+
+      prototype.appendText = function(element, text) {
+        return element.appendChild(this.document.createTextNode(text));
+      };
+
+      prototype.setAttribute = function(element, name, value) {
+        element.setAttribute(name, String(value));
+      };
+
+      prototype.setAttributeNS = function(element, namespace, name, value) {
+        element.setAttributeNS(namespace, name, String(value));
+      };
+
+      if (canRemoveSvgViewBoxAttribute){
+        prototype.removeAttribute = function(element, name) {
+          element.removeAttribute(name);
+        };
+      } else {
+        prototype.removeAttribute = function(element, name) {
+          if (element.tagName === 'svg' && name === 'viewBox') {
+            element.setAttribute(name, null);
+          } else {
+            element.removeAttribute(name);
+          }
+        };
+      }
+
+      prototype.setPropertyStrict = function(element, name, value) {
+        element[name] = value;
+      };
+
+      prototype.setProperty = function(element, name, value, namespace) {
+        var lowercaseName = name.toLowerCase();
+        if (element.namespaceURI === svgNamespace || lowercaseName === 'style') {
+          if (isAttrRemovalValue(value)) {
+            element.removeAttribute(name);
+          } else {
+            if (namespace) {
+              element.setAttributeNS(namespace, name, value);
+            } else {
+              element.setAttribute(name, value);
+            }
+          }
+        } else {
+          var normalized = normalizeProperty(element, name);
+          if (normalized) {
+            element[normalized] = value;
+          } else {
             if (isAttrRemovalValue(value)) {
               element.removeAttribute(name);
             } else {
-              if (namespace) {
+              if (namespace && element.setAttributeNS) {
                 element.setAttributeNS(namespace, name, value);
               } else {
                 element.setAttribute(name, value);
               }
             }
-          } else {
-            var normalized = normalizeProperty(element, name);
-            if (normalized) {
-              element[normalized] = value;
+          }
+        }
+      };
+
+      if (doc && doc.createElementNS) {
+        // Only opt into namespace detection if a contextualElement
+        // is passed.
+        prototype.createElement = function(tagName, contextualElement) {
+          var namespace = this.namespace;
+          if (contextualElement) {
+            if (tagName === 'svg') {
+              namespace = svgNamespace;
             } else {
-              if (isAttrRemovalValue(value)) {
-                element.removeAttribute(name);
-              } else {
-                if (namespace && element.setAttributeNS) {
-                  element.setAttributeNS(namespace, name, value);
-                } else {
-                  element.setAttribute(name, value);
-                }
-              }
+              namespace = interiorNamespace(contextualElement);
             }
           }
-        };
-
-        if (doc && doc.createElementNS) {
-          // Only opt into namespace detection if a contextualElement
-          // is passed.
-          prototype.createElement = function(tagName, contextualElement) {
-            var namespace = this.namespace;
-            if (contextualElement) {
-              if (tagName === 'svg') {
-                namespace = svgNamespace;
-              } else {
-                namespace = interiorNamespace(contextualElement);
-              }
-            }
-            if (namespace) {
-              return this.document.createElementNS(namespace, tagName);
-            } else {
-              return this.document.createElement(tagName);
-            }
-          };
-          prototype.setAttributeNS = function(element, namespace, name, value) {
-            element.setAttributeNS(namespace, name, String(value));
-          };
-        } else {
-          prototype.createElement = function(tagName) {
+          if (namespace) {
+            return this.document.createElementNS(namespace, tagName);
+          } else {
             return this.document.createElement(tagName);
-          };
-          prototype.setAttributeNS = function(element, namespace, name, value) {
-            element.setAttribute(name, String(value));
-          };
+          }
+        };
+        prototype.setAttributeNS = function(element, namespace, name, value) {
+          element.setAttributeNS(namespace, name, String(value));
+        };
+      } else {
+        prototype.createElement = function(tagName) {
+          return this.document.createElement(tagName);
+        };
+        prototype.setAttributeNS = function(element, namespace, name, value) {
+          element.setAttribute(name, String(value));
+        };
+      }
+
+      prototype.addClasses = addClasses;
+      prototype.removeClasses = removeClasses;
+
+      prototype.setNamespace = function(ns) {
+        this.namespace = ns;
+      };
+
+      prototype.detectNamespace = function(element) {
+        this.namespace = interiorNamespace(element);
+      };
+
+      prototype.createDocumentFragment = function(){
+        return this.document.createDocumentFragment();
+      };
+
+      prototype.createTextNode = function(text){
+        return this.document.createTextNode(text);
+      };
+
+      prototype.createComment = function(text){
+        return this.document.createComment(text);
+      };
+
+      prototype.repairClonedNode = function(element, blankChildTextNodes, isChecked){
+        if (deletesBlankTextNodes && blankChildTextNodes.length > 0) {
+          for (var i=0, len=blankChildTextNodes.length;i<len;i++){
+            var textNode = this.document.createTextNode(''),
+              offset = blankChildTextNodes[i],
+              before = this.childAtIndex(element, offset);
+            if (before) {
+              element.insertBefore(textNode, before);
+            } else {
+              element.appendChild(textNode);
+            }
+          }
+        }
+        if (ignoresCheckedAttribute && isChecked) {
+          element.setAttribute('checked', 'checked');
+        }
+      };
+
+      prototype.cloneNode = function(element, deep){
+        var clone = element.cloneNode(!!deep);
+        return clone;
+      };
+
+      prototype.createAttrMorph = function(element, attrName, namespace){
+        return new AttrMorph(element, attrName, this, namespace);
+      };
+
+      prototype.createUnsafeAttrMorph = function(element, attrName, namespace){
+        var morph = this.createAttrMorph(element, attrName, namespace);
+        morph.escaped = false;
+        return morph;
+      };
+
+      prototype.createMorph = function(parent, start, end, contextualElement){
+        if (contextualElement && contextualElement.nodeType === 11) {
+          throw new Error("Cannot pass a fragment as the contextual element to createMorph");
         }
 
-        prototype.addClasses = addClasses;
-        prototype.removeClasses = removeClasses;
+        if (!contextualElement && parent.nodeType === 1) {
+          contextualElement = parent;
+        }
+        var morph = new Morph(this, contextualElement);
+        morph.firstNode = start;
+        morph.lastNode = end;
+        morph.state = {};
+        morph.isDirty = true;
+        return morph;
+      };
 
-        prototype.setNamespace = function(ns) {
-          this.namespace = ns;
-        };
+      prototype.createUnsafeMorph = function(parent, start, end, contextualElement){
+        var morph = this.createMorph(parent, start, end, contextualElement);
+        morph.parseTextAsHTML = true;
+        return morph;
+      };
 
-        prototype.detectNamespace = function(element) {
-          this.namespace = interiorNamespace(element);
-        };
+      // This helper is just to keep the templates good looking,
+      // passing integers instead of element references.
+      prototype.createMorphAt = function(parent, startIndex, endIndex, contextualElement){
+        var single = startIndex === endIndex;
+        var start = this.childAtIndex(parent, startIndex);
+        var end = single ? start : this.childAtIndex(parent, endIndex);
+        return this.createMorph(parent, start, end, contextualElement);
+      };
 
-        prototype.createDocumentFragment = function(){
-          return this.document.createDocumentFragment();
-        };
+      prototype.createUnsafeMorphAt = function(parent, startIndex, endIndex, contextualElement) {
+        var morph = this.createMorphAt(parent, startIndex, endIndex, contextualElement);
+        morph.parseTextAsHTML = true;
+        return morph;
+      };
 
-        prototype.createTextNode = function(text){
-          return this.document.createTextNode(text);
-        };
+      prototype.insertMorphBefore = function(element, referenceChild, contextualElement) {
+        var insertion = this.document.createComment('');
+        element.insertBefore(insertion, referenceChild);
+        return this.createMorph(element, insertion, insertion, contextualElement);
+      };
 
-        prototype.createComment = function(text){
-          return this.document.createComment(text);
-        };
+      prototype.appendMorph = function(element, contextualElement) {
+        var insertion = this.document.createComment('');
+        element.appendChild(insertion);
+        return this.createMorph(element, insertion, insertion, contextualElement);
+      };
 
-        prototype.repairClonedNode = function(element, blankChildTextNodes, isChecked){
-          if (deletesBlankTextNodes && blankChildTextNodes.length > 0) {
-            for (var i=0, len=blankChildTextNodes.length;i<len;i++){
-              var textNode = this.document.createTextNode(''),
-                  offset = blankChildTextNodes[i],
-                  before = this.childAtIndex(element, offset);
-              if (before) {
-                element.insertBefore(textNode, before);
-              } else {
-                element.appendChild(textNode);
-              }
+      prototype.insertBoundary = function(fragment, index) {
+        // this will always be null or firstChild
+        var child = index === null ? null : this.childAtIndex(fragment, index);
+        this.insertBefore(fragment, this.createTextNode(''), child);
+      };
+
+      prototype.parseHTML = function(html, contextualElement) {
+        var childNodes;
+
+        if (interiorNamespace(contextualElement) === svgNamespace) {
+          childNodes = buildSVGDOM(html, this);
+        } else {
+          var nodes = buildHTMLDOM(html, contextualElement, this);
+          if (detectOmittedStartTag(html, contextualElement)) {
+            var node = nodes[0];
+            while (node && node.nodeType !== 1) {
+              node = node.nextSibling;
             }
-          }
-          if (ignoresCheckedAttribute && isChecked) {
-            element.setAttribute('checked', 'checked');
-          }
-        };
-
-        prototype.cloneNode = function(element, deep){
-          var clone = element.cloneNode(!!deep);
-          return clone;
-        };
-
-        prototype.createAttrMorph = function(element, attrName, namespace){
-          return new AttrMorph(element, attrName, this, namespace);
-        };
-
-        prototype.createUnsafeAttrMorph = function(element, attrName, namespace){
-          var morph = this.createAttrMorph(element, attrName, namespace);
-          morph.escaped = false;
-          return morph;
-        };
-
-        prototype.createMorph = function(parent, start, end, contextualElement){
-          if (contextualElement && contextualElement.nodeType === 11) {
-            throw new Error("Cannot pass a fragment as the contextual element to createMorph");
-          }
-
-          if (!contextualElement && parent.nodeType === 1) {
-            contextualElement = parent;
-          }
-          var morph = new Morph(this, contextualElement);
-          morph.firstNode = start;
-          morph.lastNode = end;
-          morph.state = {};
-          morph.isDirty = true;
-          return morph;
-        };
-
-        prototype.createUnsafeMorph = function(parent, start, end, contextualElement){
-          var morph = this.createMorph(parent, start, end, contextualElement);
-          morph.parseTextAsHTML = true;
-          return morph;
-        };
-
-        // This helper is just to keep the templates good looking,
-        // passing integers instead of element references.
-        prototype.createMorphAt = function(parent, startIndex, endIndex, contextualElement){
-          var single = startIndex === endIndex;
-          var start = this.childAtIndex(parent, startIndex);
-          var end = single ? start : this.childAtIndex(parent, endIndex);
-          return this.createMorph(parent, start, end, contextualElement);
-        };
-
-        prototype.createUnsafeMorphAt = function(parent, startIndex, endIndex, contextualElement) {
-          var morph = this.createMorphAt(parent, startIndex, endIndex, contextualElement);
-          morph.parseTextAsHTML = true;
-          return morph;
-        };
-
-        prototype.insertMorphBefore = function(element, referenceChild, contextualElement) {
-          var insertion = this.document.createComment('');
-          element.insertBefore(insertion, referenceChild);
-          return this.createMorph(element, insertion, insertion, contextualElement);
-        };
-
-        prototype.appendMorph = function(element, contextualElement) {
-          var insertion = this.document.createComment('');
-          element.appendChild(insertion);
-          return this.createMorph(element, insertion, insertion, contextualElement);
-        };
-
-        prototype.insertBoundary = function(fragment, index) {
-          // this will always be null or firstChild
-          var child = index === null ? null : this.childAtIndex(fragment, index);
-          this.insertBefore(fragment, this.createTextNode(''), child);
-        };
-
-        prototype.parseHTML = function(html, contextualElement) {
-          var childNodes;
-
-          if (interiorNamespace(contextualElement) === svgNamespace) {
-            childNodes = buildSVGDOM(html, this);
+            childNodes = node.childNodes;
           } else {
-            var nodes = buildHTMLDOM(html, contextualElement, this);
-            if (detectOmittedStartTag(html, contextualElement)) {
-              var node = nodes[0];
-              while (node && node.nodeType !== 1) {
-                node = node.nextSibling;
-              }
-              childNodes = node.childNodes;
-            } else {
-              childNodes = nodes;
-            }
+            childNodes = nodes;
+          }
+        }
+
+        // Copy node list to a fragment.
+        var fragment = this.document.createDocumentFragment();
+
+        if (childNodes && childNodes.length > 0) {
+          var currentNode = childNodes[0];
+
+          // We prepend an <option> to <select> boxes to absorb any browser bugs
+          // related to auto-select behavior. Skip past it.
+          if (contextualElement.tagName === 'SELECT') {
+            currentNode = currentNode.nextSibling;
           }
 
-          // Copy node list to a fragment.
-          var fragment = this.document.createDocumentFragment();
+          while (currentNode) {
+            var tempNode = currentNode;
+            currentNode = currentNode.nextSibling;
 
-          if (childNodes && childNodes.length > 0) {
-            var currentNode = childNodes[0];
-
-            // We prepend an <option> to <select> boxes to absorb any browser bugs
-            // related to auto-select behavior. Skip past it.
-            if (contextualElement.tagName === 'SELECT') {
-              currentNode = currentNode.nextSibling;
-            }
-
-            while (currentNode) {
-              var tempNode = currentNode;
-              currentNode = currentNode.nextSibling;
-
-              fragment.appendChild(tempNode);
-            }
+            fragment.appendChild(tempNode);
           }
+        }
 
-          return fragment;
-        };
+        return fragment;
+      };
 
-        var parsingNode;
+      var parsingNode;
 
-        // Used to determine whether a URL needs to be sanitized.
-        prototype.protocolForURL = function(url) {
-          if (!parsingNode) {
-            parsingNode = this.document.createElement('a');
-          }
+      // Used to determine whether a URL needs to be sanitized.
+      prototype.protocolForURL = function(url) {
+        if (!parsingNode) {
+          parsingNode = this.document.createElement('a');
+        }
 
-          parsingNode.href = url;
-          return parsingNode.protocol;
-        };
+        parsingNode.href = url;
+        return parsingNode.protocol;
+      };
 
-        __exports__["default"] = DOMHelper;
-      });
+      __exports__["default"] = DOMHelper;
+    });
   enifed("dom-helper/build-html-dom",
-      ["exports"],
-      function(__exports__) {
-        "use strict";
-        /* global XMLSerializer:false */
-        var svgHTMLIntegrationPoints = {foreignObject: 1, desc: 1, title: 1};
-        __exports__.svgHTMLIntegrationPoints = svgHTMLIntegrationPoints;var svgNamespace = 'http://www.w3.org/2000/svg';
-        __exports__.svgNamespace = svgNamespace;
-        var doc = typeof document === 'undefined' ? false : document;
+    ["exports"],
+    function(__exports__) {
+      "use strict";
+      /* global XMLSerializer:false */
+      var svgHTMLIntegrationPoints = {foreignObject: 1, desc: 1, title: 1};
+      __exports__.svgHTMLIntegrationPoints = svgHTMLIntegrationPoints;var svgNamespace = 'http://www.w3.org/2000/svg';
+      __exports__.svgNamespace = svgNamespace;
+      var doc = typeof document === 'undefined' ? false : document;
 
-        // Safari does not like using innerHTML on SVG HTML integration
-        // points (desc/title/foreignObject).
-        var needsIntegrationPointFix = doc && (function(document) {
-              if (document.createElementNS === undefined) {
-                return;
-              }
-              // In FF title will not accept innerHTML.
-              var testEl = document.createElementNS(svgNamespace, 'title');
-              testEl.innerHTML = "<div></div>";
-              return testEl.childNodes.length === 0 || testEl.childNodes[0].nodeType !== 1;
-            })(doc);
-
-        // Internet Explorer prior to 9 does not allow setting innerHTML if the first element
-        // is a "zero-scope" element. This problem can be worked around by making
-        // the first node an invisible text node. We, like Modernizr, use &shy;
-        var needsShy = doc && (function(document) {
-              var testEl = document.createElement('div');
-              testEl.innerHTML = "<div></div>";
-              testEl.firstChild.innerHTML = "<script><\/script>";
-              return testEl.firstChild.innerHTML === '';
-            })(doc);
-
-        // IE 8 (and likely earlier) likes to move whitespace preceeding
-        // a script tag to appear after it. This means that we can
-        // accidentally remove whitespace when updating a morph.
-        var movesWhitespace = doc && (function(document) {
-              var testEl = document.createElement('div');
-              testEl.innerHTML = "Test: <script type='text/x-placeholder'><\/script>Value";
-              return testEl.childNodes[0].nodeValue === 'Test:' &&
-                  testEl.childNodes[2].nodeValue === ' Value';
-            })(doc);
-
-        var tagNamesRequiringInnerHTMLFix = doc && (function(document) {
-              var tagNamesRequiringInnerHTMLFix;
-              // IE 9 and earlier don't allow us to set innerHTML on col, colgroup, frameset,
-              // html, style, table, tbody, tfoot, thead, title, tr. Detect this and add
-              // them to an initial list of corrected tags.
-              //
-              // Here we are only dealing with the ones which can have child nodes.
-              //
-              var tableNeedsInnerHTMLFix;
-              var tableInnerHTMLTestElement = document.createElement('table');
-              try {
-                tableInnerHTMLTestElement.innerHTML = '<tbody></tbody>';
-              } catch (e) {
-              } finally {
-                tableNeedsInnerHTMLFix = (tableInnerHTMLTestElement.childNodes.length === 0);
-              }
-              if (tableNeedsInnerHTMLFix) {
-                tagNamesRequiringInnerHTMLFix = {
-                  colgroup: ['table'],
-                  table: [],
-                  tbody: ['table'],
-                  tfoot: ['table'],
-                  thead: ['table'],
-                  tr: ['table', 'tbody']
-                };
-              }
-
-              // IE 8 doesn't allow setting innerHTML on a select tag. Detect this and
-              // add it to the list of corrected tags.
-              //
-              var selectInnerHTMLTestElement = document.createElement('select');
-              selectInnerHTMLTestElement.innerHTML = '<option></option>';
-              if (!selectInnerHTMLTestElement.childNodes[0]) {
-                tagNamesRequiringInnerHTMLFix = tagNamesRequiringInnerHTMLFix || {};
-                tagNamesRequiringInnerHTMLFix.select = [];
-              }
-              return tagNamesRequiringInnerHTMLFix;
-            })(doc);
-
-        function scriptSafeInnerHTML(element, html) {
-          // without a leading text node, IE will drop a leading script tag.
-          html = '&shy;'+html;
-
-          element.innerHTML = html;
-
-          var nodes = element.childNodes;
-
-          // Look for &shy; to remove it.
-          var shyElement = nodes[0];
-          while (shyElement.nodeType === 1 && !shyElement.nodeName) {
-            shyElement = shyElement.firstChild;
+      // Safari does not like using innerHTML on SVG HTML integration
+      // points (desc/title/foreignObject).
+      var needsIntegrationPointFix = doc && (function(document) {
+          if (document.createElementNS === undefined) {
+            return;
           }
-          // At this point it's the actual unicode character.
-          if (shyElement.nodeType === 3 && shyElement.nodeValue.charAt(0) === "\u00AD") {
-            var newValue = shyElement.nodeValue.slice(1);
-            if (newValue.length) {
-              shyElement.nodeValue = shyElement.nodeValue.slice(1);
+          // In FF title will not accept innerHTML.
+          var testEl = document.createElementNS(svgNamespace, 'title');
+          testEl.innerHTML = "<div></div>";
+          return testEl.childNodes.length === 0 || testEl.childNodes[0].nodeType !== 1;
+        })(doc);
+
+      // Internet Explorer prior to 9 does not allow setting innerHTML if the first element
+      // is a "zero-scope" element. This problem can be worked around by making
+      // the first node an invisible text node. We, like Modernizr, use &shy;
+      var needsShy = doc && (function(document) {
+          var testEl = document.createElement('div');
+          testEl.innerHTML = "<div></div>";
+          testEl.firstChild.innerHTML = "<script><\/script>";
+          return testEl.firstChild.innerHTML === '';
+        })(doc);
+
+      // IE 8 (and likely earlier) likes to move whitespace preceeding
+      // a script tag to appear after it. This means that we can
+      // accidentally remove whitespace when updating a morph.
+      var movesWhitespace = doc && (function(document) {
+          var testEl = document.createElement('div');
+          testEl.innerHTML = "Test: <script type='text/x-placeholder'><\/script>Value";
+          return testEl.childNodes[0].nodeValue === 'Test:' &&
+            testEl.childNodes[2].nodeValue === ' Value';
+        })(doc);
+
+      var tagNamesRequiringInnerHTMLFix = doc && (function(document) {
+          var tagNamesRequiringInnerHTMLFix;
+          // IE 9 and earlier don't allow us to set innerHTML on col, colgroup, frameset,
+          // html, style, table, tbody, tfoot, thead, title, tr. Detect this and add
+          // them to an initial list of corrected tags.
+          //
+          // Here we are only dealing with the ones which can have child nodes.
+          //
+          var tableNeedsInnerHTMLFix;
+          var tableInnerHTMLTestElement = document.createElement('table');
+          try {
+            tableInnerHTMLTestElement.innerHTML = '<tbody></tbody>';
+          } catch (e) {
+          } finally {
+            tableNeedsInnerHTMLFix = (tableInnerHTMLTestElement.childNodes.length === 0);
+          }
+          if (tableNeedsInnerHTMLFix) {
+            tagNamesRequiringInnerHTMLFix = {
+              colgroup: ['table'],
+              table: [],
+              tbody: ['table'],
+              tfoot: ['table'],
+              thead: ['table'],
+              tr: ['table', 'tbody']
+            };
+          }
+
+          // IE 8 doesn't allow setting innerHTML on a select tag. Detect this and
+          // add it to the list of corrected tags.
+          //
+          var selectInnerHTMLTestElement = document.createElement('select');
+          selectInnerHTMLTestElement.innerHTML = '<option></option>';
+          if (!selectInnerHTMLTestElement.childNodes[0]) {
+            tagNamesRequiringInnerHTMLFix = tagNamesRequiringInnerHTMLFix || {};
+            tagNamesRequiringInnerHTMLFix.select = [];
+          }
+          return tagNamesRequiringInnerHTMLFix;
+        })(doc);
+
+      function scriptSafeInnerHTML(element, html) {
+        // without a leading text node, IE will drop a leading script tag.
+        html = '&shy;'+html;
+
+        element.innerHTML = html;
+
+        var nodes = element.childNodes;
+
+        // Look for &shy; to remove it.
+        var shyElement = nodes[0];
+        while (shyElement.nodeType === 1 && !shyElement.nodeName) {
+          shyElement = shyElement.firstChild;
+        }
+        // At this point it's the actual unicode character.
+        if (shyElement.nodeType === 3 && shyElement.nodeValue.charAt(0) === "\u00AD") {
+          var newValue = shyElement.nodeValue.slice(1);
+          if (newValue.length) {
+            shyElement.nodeValue = shyElement.nodeValue.slice(1);
+          } else {
+            shyElement.parentNode.removeChild(shyElement);
+          }
+        }
+
+        return nodes;
+      }
+
+      function buildDOMWithFix(html, contextualElement){
+        var tagName = contextualElement.tagName;
+
+        // Firefox versions < 11 do not have support for element.outerHTML.
+        var outerHTML = contextualElement.outerHTML || new XMLSerializer().serializeToString(contextualElement);
+        if (!outerHTML) {
+          throw "Can't set innerHTML on "+tagName+" in this browser";
+        }
+
+        html = fixSelect(html, contextualElement);
+
+        var wrappingTags = tagNamesRequiringInnerHTMLFix[tagName.toLowerCase()];
+
+        var startTag = outerHTML.match(new RegExp("<"+tagName+"([^>]*)>", 'i'))[0];
+        var endTag = '</'+tagName+'>';
+
+        var wrappedHTML = [startTag, html, endTag];
+
+        var i = wrappingTags.length;
+        var wrappedDepth = 1 + i;
+        while(i--) {
+          wrappedHTML.unshift('<'+wrappingTags[i]+'>');
+          wrappedHTML.push('</'+wrappingTags[i]+'>');
+        }
+
+        var wrapper = document.createElement('div');
+        scriptSafeInnerHTML(wrapper, wrappedHTML.join(''));
+        var element = wrapper;
+        while (wrappedDepth--) {
+          element = element.firstChild;
+          while (element && element.nodeType !== 1) {
+            element = element.nextSibling;
+          }
+        }
+        while (element && element.tagName !== tagName) {
+          element = element.nextSibling;
+        }
+        return element ? element.childNodes : [];
+      }
+
+      var buildDOM;
+      if (needsShy) {
+        buildDOM = function buildDOM(html, contextualElement, dom){
+          html = fixSelect(html, contextualElement);
+
+          contextualElement = dom.cloneNode(contextualElement, false);
+          scriptSafeInnerHTML(contextualElement, html);
+          return contextualElement.childNodes;
+        };
+      } else {
+        buildDOM = function buildDOM(html, contextualElement, dom){
+          html = fixSelect(html, contextualElement);
+
+          contextualElement = dom.cloneNode(contextualElement, false);
+          contextualElement.innerHTML = html;
+          return contextualElement.childNodes;
+        };
+      }
+
+      function fixSelect(html, contextualElement) {
+        if (contextualElement.tagName === 'SELECT') {
+          html = "<option></option>" + html;
+        }
+
+        return html;
+      }
+
+      var buildIESafeDOM;
+      if (tagNamesRequiringInnerHTMLFix || movesWhitespace) {
+        buildIESafeDOM = function buildIESafeDOM(html, contextualElement, dom) {
+          // Make a list of the leading text on script nodes. Include
+          // script tags without any whitespace for easier processing later.
+          var spacesBefore = [];
+          var spacesAfter = [];
+          if (typeof html === 'string') {
+            html = html.replace(/(\s*)(<script)/g, function(match, spaces, tag) {
+              spacesBefore.push(spaces);
+              return tag;
+            });
+
+            html = html.replace(/(<\/script>)(\s*)/g, function(match, tag, spaces) {
+              spacesAfter.push(spaces);
+              return tag;
+            });
+          }
+
+          // Fetch nodes
+          var nodes;
+          if (tagNamesRequiringInnerHTMLFix[contextualElement.tagName.toLowerCase()]) {
+            // buildDOMWithFix uses string wrappers for problematic innerHTML.
+            nodes = buildDOMWithFix(html, contextualElement);
+          } else {
+            nodes = buildDOM(html, contextualElement, dom);
+          }
+
+          // Build a list of script tags, the nodes themselves will be
+          // mutated as we add test nodes.
+          var i, j, node, nodeScriptNodes;
+          var scriptNodes = [];
+          for (i=0;i<nodes.length;i++) {
+            node=nodes[i];
+            if (node.nodeType !== 1) {
+              continue;
+            }
+            if (node.tagName === 'SCRIPT') {
+              scriptNodes.push(node);
             } else {
-              shyElement.parentNode.removeChild(shyElement);
+              nodeScriptNodes = node.getElementsByTagName('script');
+              for (j=0;j<nodeScriptNodes.length;j++) {
+                scriptNodes.push(nodeScriptNodes[j]);
+              }
+            }
+          }
+
+          // Walk the script tags and put back their leading text nodes.
+          var scriptNode, textNode, spaceBefore, spaceAfter;
+          for (i=0;i<scriptNodes.length;i++) {
+            scriptNode = scriptNodes[i];
+            spaceBefore = spacesBefore[i];
+            if (spaceBefore && spaceBefore.length > 0) {
+              textNode = dom.document.createTextNode(spaceBefore);
+              scriptNode.parentNode.insertBefore(textNode, scriptNode);
+            }
+
+            spaceAfter = spacesAfter[i];
+            if (spaceAfter && spaceAfter.length > 0) {
+              textNode = dom.document.createTextNode(spaceAfter);
+              scriptNode.parentNode.insertBefore(textNode, scriptNode.nextSibling);
             }
           }
 
           return nodes;
-        }
+        };
+      } else {
+        buildIESafeDOM = buildDOM;
+      }
 
-        function buildDOMWithFix(html, contextualElement){
-          var tagName = contextualElement.tagName;
-
-          // Firefox versions < 11 do not have support for element.outerHTML.
-          var outerHTML = contextualElement.outerHTML || new XMLSerializer().serializeToString(contextualElement);
-          if (!outerHTML) {
-            throw "Can't set innerHTML on "+tagName+" in this browser";
+      var buildHTMLDOM;
+      if (needsIntegrationPointFix) {
+        buildHTMLDOM = function buildHTMLDOM(html, contextualElement, dom){
+          if (svgHTMLIntegrationPoints[contextualElement.tagName]) {
+            return buildIESafeDOM(html, document.createElement('div'), dom);
+          } else {
+            return buildIESafeDOM(html, contextualElement, dom);
           }
+        };
+      } else {
+        buildHTMLDOM = buildIESafeDOM;
+      }
 
-          html = fixSelect(html, contextualElement);
-
-          var wrappingTags = tagNamesRequiringInnerHTMLFix[tagName.toLowerCase()];
-
-          var startTag = outerHTML.match(new RegExp("<"+tagName+"([^>]*)>", 'i'))[0];
-          var endTag = '</'+tagName+'>';
-
-          var wrappedHTML = [startTag, html, endTag];
-
-          var i = wrappingTags.length;
-          var wrappedDepth = 1 + i;
-          while(i--) {
-            wrappedHTML.unshift('<'+wrappingTags[i]+'>');
-            wrappedHTML.push('</'+wrappingTags[i]+'>');
-          }
-
-          var wrapper = document.createElement('div');
-          scriptSafeInnerHTML(wrapper, wrappedHTML.join(''));
-          var element = wrapper;
-          while (wrappedDepth--) {
-            element = element.firstChild;
-            while (element && element.nodeType !== 1) {
-              element = element.nextSibling;
-            }
-          }
-          while (element && element.tagName !== tagName) {
-            element = element.nextSibling;
-          }
-          return element ? element.childNodes : [];
-        }
-
-        var buildDOM;
-        if (needsShy) {
-          buildDOM = function buildDOM(html, contextualElement, dom){
-            html = fixSelect(html, contextualElement);
-
-            contextualElement = dom.cloneNode(contextualElement, false);
-            scriptSafeInnerHTML(contextualElement, html);
-            return contextualElement.childNodes;
-          };
-        } else {
-          buildDOM = function buildDOM(html, contextualElement, dom){
-            html = fixSelect(html, contextualElement);
-
-            contextualElement = dom.cloneNode(contextualElement, false);
-            contextualElement.innerHTML = html;
-            return contextualElement.childNodes;
-          };
-        }
-
-        function fixSelect(html, contextualElement) {
-          if (contextualElement.tagName === 'SELECT') {
-            html = "<option></option>" + html;
-          }
-
-          return html;
-        }
-
-        var buildIESafeDOM;
-        if (tagNamesRequiringInnerHTMLFix || movesWhitespace) {
-          buildIESafeDOM = function buildIESafeDOM(html, contextualElement, dom) {
-            // Make a list of the leading text on script nodes. Include
-            // script tags without any whitespace for easier processing later.
-            var spacesBefore = [];
-            var spacesAfter = [];
-            if (typeof html === 'string') {
-              html = html.replace(/(\s*)(<script)/g, function(match, spaces, tag) {
-                spacesBefore.push(spaces);
-                return tag;
-              });
-
-              html = html.replace(/(<\/script>)(\s*)/g, function(match, tag, spaces) {
-                spacesAfter.push(spaces);
-                return tag;
-              });
-            }
-
-            // Fetch nodes
-            var nodes;
-            if (tagNamesRequiringInnerHTMLFix[contextualElement.tagName.toLowerCase()]) {
-              // buildDOMWithFix uses string wrappers for problematic innerHTML.
-              nodes = buildDOMWithFix(html, contextualElement);
-            } else {
-              nodes = buildDOM(html, contextualElement, dom);
-            }
-
-            // Build a list of script tags, the nodes themselves will be
-            // mutated as we add test nodes.
-            var i, j, node, nodeScriptNodes;
-            var scriptNodes = [];
-            for (i=0;i<nodes.length;i++) {
-              node=nodes[i];
-              if (node.nodeType !== 1) {
-                continue;
-              }
-              if (node.tagName === 'SCRIPT') {
-                scriptNodes.push(node);
-              } else {
-                nodeScriptNodes = node.getElementsByTagName('script');
-                for (j=0;j<nodeScriptNodes.length;j++) {
-                  scriptNodes.push(nodeScriptNodes[j]);
-                }
-              }
-            }
-
-            // Walk the script tags and put back their leading text nodes.
-            var scriptNode, textNode, spaceBefore, spaceAfter;
-            for (i=0;i<scriptNodes.length;i++) {
-              scriptNode = scriptNodes[i];
-              spaceBefore = spacesBefore[i];
-              if (spaceBefore && spaceBefore.length > 0) {
-                textNode = dom.document.createTextNode(spaceBefore);
-                scriptNode.parentNode.insertBefore(textNode, scriptNode);
-              }
-
-              spaceAfter = spacesAfter[i];
-              if (spaceAfter && spaceAfter.length > 0) {
-                textNode = dom.document.createTextNode(spaceAfter);
-                scriptNode.parentNode.insertBefore(textNode, scriptNode.nextSibling);
-              }
-            }
-
-            return nodes;
-          };
-        } else {
-          buildIESafeDOM = buildDOM;
-        }
-
-        var buildHTMLDOM;
-        if (needsIntegrationPointFix) {
-          buildHTMLDOM = function buildHTMLDOM(html, contextualElement, dom){
-            if (svgHTMLIntegrationPoints[contextualElement.tagName]) {
-              return buildIESafeDOM(html, document.createElement('div'), dom);
-            } else {
-              return buildIESafeDOM(html, contextualElement, dom);
-            }
-          };
-        } else {
-          buildHTMLDOM = buildIESafeDOM;
-        }
-
-        __exports__.buildHTMLDOM = buildHTMLDOM;
-      });
+      __exports__.buildHTMLDOM = buildHTMLDOM;
+    });
   enifed("dom-helper/classes",
-      ["exports"],
-      function(__exports__) {
-        "use strict";
-        var doc = typeof document === 'undefined' ? false : document;
+    ["exports"],
+    function(__exports__) {
+      "use strict";
+      var doc = typeof document === 'undefined' ? false : document;
 
-        // PhantomJS has a broken classList. See https://github.com/ariya/phantomjs/issues/12782
-        var canClassList = doc && (function(){
-              var d = document.createElement('div');
-              if (!d.classList) {
-                return false;
-              }
-              d.classList.add('boo');
-              d.classList.add('boo', 'baz');
-              return (d.className === 'boo baz');
-            })();
+      // PhantomJS has a broken classList. See https://github.com/ariya/phantomjs/issues/12782
+      var canClassList = doc && (function(){
+          var d = document.createElement('div');
+          if (!d.classList) {
+            return false;
+          }
+          d.classList.add('boo');
+          d.classList.add('boo', 'baz');
+          return (d.className === 'boo baz');
+        })();
 
-        function buildClassList(element) {
-          var classString = (element.getAttribute('class') || '');
-          return classString !== '' && classString !== ' ' ? classString.split(' ') : [];
-        }
+      function buildClassList(element) {
+        var classString = (element.getAttribute('class') || '');
+        return classString !== '' && classString !== ' ' ? classString.split(' ') : [];
+      }
 
-        function intersect(containingArray, valuesArray) {
-          var containingIndex = 0;
-          var containingLength = containingArray.length;
-          var valuesIndex = 0;
-          var valuesLength = valuesArray.length;
+      function intersect(containingArray, valuesArray) {
+        var containingIndex = 0;
+        var containingLength = containingArray.length;
+        var valuesIndex = 0;
+        var valuesLength = valuesArray.length;
 
-          var intersection = new Array(valuesLength);
+        var intersection = new Array(valuesLength);
 
-          // TODO: rewrite this loop in an optimal manner
-          for (;containingIndex<containingLength;containingIndex++) {
-            valuesIndex = 0;
-            for (;valuesIndex<valuesLength;valuesIndex++) {
-              if (valuesArray[valuesIndex] === containingArray[containingIndex]) {
-                intersection[valuesIndex] = containingIndex;
-                break;
-              }
+        // TODO: rewrite this loop in an optimal manner
+        for (;containingIndex<containingLength;containingIndex++) {
+          valuesIndex = 0;
+          for (;valuesIndex<valuesLength;valuesIndex++) {
+            if (valuesArray[valuesIndex] === containingArray[containingIndex]) {
+              intersection[valuesIndex] = containingIndex;
+              break;
             }
           }
-
-          return intersection;
         }
 
-        function addClassesViaAttribute(element, classNames) {
-          var existingClasses = buildClassList(element);
+        return intersection;
+      }
 
-          var indexes = intersect(existingClasses, classNames);
-          var didChange = false;
+      function addClassesViaAttribute(element, classNames) {
+        var existingClasses = buildClassList(element);
 
-          for (var i=0, l=classNames.length; i<l; i++) {
-            if (indexes[i] === undefined) {
-              didChange = true;
-              existingClasses.push(classNames[i]);
-            }
-          }
+        var indexes = intersect(existingClasses, classNames);
+        var didChange = false;
 
-          if (didChange) {
-            element.setAttribute('class', existingClasses.length > 0 ? existingClasses.join(' ') : '');
+        for (var i=0, l=classNames.length; i<l; i++) {
+          if (indexes[i] === undefined) {
+            didChange = true;
+            existingClasses.push(classNames[i]);
           }
         }
 
-        function removeClassesViaAttribute(element, classNames) {
-          var existingClasses = buildClassList(element);
+        if (didChange) {
+          element.setAttribute('class', existingClasses.length > 0 ? existingClasses.join(' ') : '');
+        }
+      }
 
-          var indexes = intersect(classNames, existingClasses);
-          var didChange = false;
-          var newClasses = [];
+      function removeClassesViaAttribute(element, classNames) {
+        var existingClasses = buildClassList(element);
 
-          for (var i=0, l=existingClasses.length; i<l; i++) {
-            if (indexes[i] === undefined) {
-              newClasses.push(existingClasses[i]);
+        var indexes = intersect(classNames, existingClasses);
+        var didChange = false;
+        var newClasses = [];
+
+        for (var i=0, l=existingClasses.length; i<l; i++) {
+          if (indexes[i] === undefined) {
+            newClasses.push(existingClasses[i]);
+          } else {
+            didChange = true;
+          }
+        }
+
+        if (didChange) {
+          element.setAttribute('class', newClasses.length > 0 ? newClasses.join(' ') : '');
+        }
+      }
+
+      var addClasses, removeClasses;
+      if (canClassList) {
+        addClasses = function addClasses(element, classNames) {
+          if (element.classList) {
+            if (classNames.length === 1) {
+              element.classList.add(classNames[0]);
+            } else if (classNames.length === 2) {
+              element.classList.add(classNames[0], classNames[1]);
             } else {
-              didChange = true;
+              element.classList.add.apply(element.classList, classNames);
             }
+          } else {
+            addClassesViaAttribute(element, classNames);
           }
-
-          if (didChange) {
-            element.setAttribute('class', newClasses.length > 0 ? newClasses.join(' ') : '');
+        };
+        removeClasses = function removeClasses(element, classNames) {
+          if (element.classList) {
+            if (classNames.length === 1) {
+              element.classList.remove(classNames[0]);
+            } else if (classNames.length === 2) {
+              element.classList.remove(classNames[0], classNames[1]);
+            } else {
+              element.classList.remove.apply(element.classList, classNames);
+            }
+          } else {
+            removeClassesViaAttribute(element, classNames);
           }
-        }
+        };
+      } else {
+        addClasses = addClassesViaAttribute;
+        removeClasses = removeClassesViaAttribute;
+      }
 
-        var addClasses, removeClasses;
-        if (canClassList) {
-          addClasses = function addClasses(element, classNames) {
-            if (element.classList) {
-              if (classNames.length === 1) {
-                element.classList.add(classNames[0]);
-              } else if (classNames.length === 2) {
-                element.classList.add(classNames[0], classNames[1]);
-              } else {
-                element.classList.add.apply(element.classList, classNames);
-              }
-            } else {
-              addClassesViaAttribute(element, classNames);
-            }
-          };
-          removeClasses = function removeClasses(element, classNames) {
-            if (element.classList) {
-              if (classNames.length === 1) {
-                element.classList.remove(classNames[0]);
-              } else if (classNames.length === 2) {
-                element.classList.remove(classNames[0], classNames[1]);
-              } else {
-                element.classList.remove.apply(element.classList, classNames);
-              }
-            } else {
-              removeClassesViaAttribute(element, classNames);
-            }
-          };
-        } else {
-          addClasses = addClassesViaAttribute;
-          removeClasses = removeClassesViaAttribute;
-        }
-
-        __exports__.addClasses = addClasses;
-        __exports__.removeClasses = removeClasses;
-      });
+      __exports__.addClasses = addClasses;
+      __exports__.removeClasses = removeClasses;
+    });
   enifed("dom-helper/prop",
-      ["exports"],
-      function(__exports__) {
-        "use strict";
-        function isAttrRemovalValue(value) {
-          return value === null || value === undefined;
-        }
+    ["exports"],
+    function(__exports__) {
+      "use strict";
+      function isAttrRemovalValue(value) {
+        return value === null || value === undefined;
+      }
 
-        __exports__.isAttrRemovalValue = isAttrRemovalValue;// TODO should this be an o_create kind of thing?
-        var propertyCaches = {};
-        __exports__.propertyCaches = propertyCaches;
-        function normalizeProperty(element, attrName) {
-          var tagName = element.tagName;
-          var key;
-          var cache = propertyCaches[tagName];
-          if (!cache) {
-            // TODO should this be an o_create kind of thing?
-            cache = {};
-            for (key in element) {
-              cache[key.toLowerCase()] = key;
-            }
-            propertyCaches[tagName] = cache;
+      __exports__.isAttrRemovalValue = isAttrRemovalValue;// TODO should this be an o_create kind of thing?
+      var propertyCaches = {};
+      __exports__.propertyCaches = propertyCaches;
+      function normalizeProperty(element, attrName) {
+        var tagName = element.tagName;
+        var key;
+        var cache = propertyCaches[tagName];
+        if (!cache) {
+          // TODO should this be an o_create kind of thing?
+          cache = {};
+          for (key in element) {
+            cache[key.toLowerCase()] = key;
           }
-
-          // presumes that the attrName has been lowercased.
-          return cache[attrName];
+          propertyCaches[tagName] = cache;
         }
 
-        __exports__.normalizeProperty = normalizeProperty;
-      });
+        // presumes that the attrName has been lowercased.
+        return cache[attrName];
+      }
+
+      __exports__.normalizeProperty = normalizeProperty;
+    });
   enifed('ember-application', ['ember-metal/core', 'ember-runtime/system/lazy_load', 'ember-application/system/resolver', 'ember-application/system/application', 'ember-application/ext/controller'], function (Ember, lazy_load, DefaultResolver, Application) {
 
     'use strict';
@@ -4802,7 +4802,7 @@
         var symbol, padding;
 
         if (found) {
-          symbol = '[â]';
+          symbol = '[✓]';
         } else {
           symbol = '[ ]';
         }
@@ -5048,7 +5048,7 @@
      so that if `ember.js` (which must be output for backwards compat reasons) is
      used a nice helpful warning message will be printed out.
      */
-    var runningNonEmberDebugJS = true;
+    var runningNonEmberDebugJS = false;
     if (runningNonEmberDebugJS) {
       Ember['default'].warn('Please use `ember.debug.js` instead of `ember.js` for development and debugging.');
     }
@@ -7405,7 +7405,7 @@
         render: function render(context, env, contextualElement) {
           var dom = env.dom;
           var hooks = env.hooks,
-              content = hooks.content;
+            content = hooks.content;
           dom.detectNamespace(contextualElement);
           var fragment;
           if (env.useFragmentCache && dom.canClone) {
@@ -7493,7 +7493,7 @@
         render: function render(context, env, contextualElement) {
           var dom = env.dom;
           var hooks = env.hooks,
-              content = hooks.content;
+            content = hooks.content;
           dom.detectNamespace(contextualElement);
           var fragment;
           if (env.useFragmentCache && dom.canClone) {
@@ -7541,7 +7541,7 @@
         render: function render(context, env, contextualElement) {
           var dom = env.dom;
           var hooks = env.hooks,
-              content = hooks.content;
+            content = hooks.content;
           dom.detectNamespace(contextualElement);
           var fragment;
           if (env.useFragmentCache && dom.canClone) {
@@ -7589,7 +7589,7 @@
         render: function render(context, env, contextualElement) {
           var dom = env.dom;
           var hooks = env.hooks,
-              content = hooks.content;
+            content = hooks.content;
           dom.detectNamespace(contextualElement);
           var fragment;
           if (env.useFragmentCache && dom.canClone) {
@@ -7641,7 +7641,7 @@
           render: function render(context, env, contextualElement) {
             var dom = env.dom;
             var hooks = env.hooks,
-                content = hooks.content;
+              content = hooks.content;
             dom.detectNamespace(contextualElement);
             var fragment;
             if (env.useFragmentCache && dom.canClone) {
@@ -7682,8 +7682,8 @@
             render: function render(context, env, contextualElement) {
               var dom = env.dom;
               var hooks = env.hooks,
-                  get = hooks.get,
-                  inline = hooks.inline;
+                get = hooks.get,
+                inline = hooks.inline;
               dom.detectNamespace(contextualElement);
               var fragment;
               if (env.useFragmentCache && dom.canClone) {
@@ -7724,8 +7724,8 @@
           render: function render(context, env, contextualElement) {
             var dom = env.dom;
             var hooks = env.hooks,
-                get = hooks.get,
-                block = hooks.block;
+              get = hooks.get,
+              block = hooks.block;
             dom.detectNamespace(contextualElement);
             var fragment;
             if (env.useFragmentCache && dom.canClone) {
@@ -7768,8 +7768,8 @@
             render: function render(context, env, contextualElement) {
               var dom = env.dom;
               var hooks = env.hooks,
-                  get = hooks.get,
-                  inline = hooks.inline;
+                get = hooks.get,
+                inline = hooks.inline;
               dom.detectNamespace(contextualElement);
               var fragment;
               if (env.useFragmentCache && dom.canClone) {
@@ -7810,8 +7810,8 @@
           render: function render(context, env, contextualElement) {
             var dom = env.dom;
             var hooks = env.hooks,
-                get = hooks.get,
-                block = hooks.block;
+              get = hooks.get,
+              block = hooks.block;
             dom.detectNamespace(contextualElement);
             var fragment;
             if (env.useFragmentCache && dom.canClone) {
@@ -7856,8 +7856,8 @@
         render: function render(context, env, contextualElement) {
           var dom = env.dom;
           var hooks = env.hooks,
-              get = hooks.get,
-              block = hooks.block;
+            get = hooks.get,
+            block = hooks.block;
           dom.detectNamespace(contextualElement);
           var fragment;
           if (env.useFragmentCache && dom.canClone) {
@@ -8259,7 +8259,7 @@
      @submodule ember-metal
      */
 
-      // BEGIN IMPORTS
+    // BEGIN IMPORTS
     computed.computed.empty = computed_macros.empty;
     computed.computed.notEmpty = computed_macros.notEmpty;
     computed.computed.none = computed_macros.none;
@@ -13310,8 +13310,8 @@
     }
 
     var sourceAvailable = (function () {
-          return this;
-        }).toString().indexOf('return this;') > -1;
+        return this;
+      }).toString().indexOf('return this;') > -1;
 
     function giveMethodSuper(obj, key, method, values, descs) {
       var superMethod;
@@ -14296,11 +14296,11 @@
       index = keySet[keyName];
       if (index === undefined) {
         index = observers.push({
-              sender: sender,
-              keyName: keyName,
-              eventName: eventName,
-              listeners: []
-            }) - 1;
+            sender: sender,
+            keyName: keyName,
+            eventName: eventName,
+            listeners: []
+          }) - 1;
         keySet[keyName] = index;
       }
       return observers[index].listeners;
@@ -16820,7 +16820,7 @@
 
      Some numbers: http://jsperf.com/eval-vs-keys/8
 
-     Known Trickâ¢
+     Known Trick™
 
      @private
      @return {String} interned version of the provided string
@@ -23899,7 +23899,7 @@
      @requires ember-metal
      */
 
-      // BEGIN IMPORTS
+    // BEGIN IMPORTS
     Ember['default'].compare = compare['default'];
     Ember['default'].copy = copy['default'];
     Ember['default'].isEqual = core.isEqual;
@@ -27086,7 +27086,7 @@
       /**
        This returns the objects at the specified indexes, using `objectAt`.
        ```javascript
-       var arr =Â ['a', 'b', 'c', 'd'];
+       var arr = ['a', 'b', 'c', 'd'];
        arr.objectsAt([0, 1, 2]);  // ['a', 'b', 'c']
        arr.objectsAt([2, 3, 4]);  // ['c', 'd', undefined]
        ```
@@ -30534,8 +30534,8 @@
      @submodule ember-runtime
      */
 
-      // using ember-metal/lib/main here to ensure that ember-debug is setup
-      // if present
+    // using ember-metal/lib/main here to ensure that ember-debug is setup
+    // if present
     "REMOVE_USE_STRICT: true";var schedule = run['default'].schedule;
     var applyMixin = mixin.Mixin._apply;
     var finishPartial = mixin.Mixin.finishPartial;
@@ -33816,10 +33816,10 @@
             return;
           }
           if (Test['default'].waiters && Test['default'].waiters.any(function (waiter) {
-                var context = waiter[0];
-                var callback = waiter[1];
-                return !callback.call(context);
-              })) {
+              var context = waiter[0];
+              var callback = waiter[1];
+              return !callback.call(context);
+            })) {
             return;
           }
           // Stop polling
@@ -34680,7 +34680,7 @@
      @main ember-views
      */
 
-      // BEGIN IMPORTS
+    // BEGIN IMPORTS
     Ember['default'].$ = jQuery['default'];
 
     Ember['default'].ViewTargetActionSupport = ViewTargetActionSupport['default'];
@@ -36871,14 +36871,14 @@
     'use strict';
 
     var canSetNameOnInputs = environment['default'].hasDOM && (function () {
-          var div = document.createElement('div');
-          var el = document.createElement('input');
+        var div = document.createElement('div');
+        var el = document.createElement('input');
 
-          el.setAttribute('name', 'foo');
-          div.appendChild(el);
+        el.setAttribute('name', 'foo');
+        div.appendChild(el);
 
-          return !!div.innerHTML.match('foo');
-        })();
+        return !!div.innerHTML.match('foo');
+      })();
 
     exports.canSetNameOnInputs = canSetNameOnInputs;
 
@@ -36897,9 +36897,9 @@
 
     function detectOmittedStartTag(dom, string, contextualElement) {
       omittedStartTagChildren = omittedStartTagChildren || {
-            tr: dom.createElement('tbody'),
-            col: dom.createElement('colgroup')
-          };
+          tr: dom.createElement('tbody'),
+          col: dom.createElement('colgroup')
+        };
 
       // Omitted start tags are only inside table tags.
       if (contextualElement.tagName === 'TABLE') {
@@ -41715,903 +41715,903 @@
 
   });
   enifed("htmlbars-util",
-      ["./htmlbars-util/safe-string","./htmlbars-util/handlebars/utils","./htmlbars-util/namespaces","exports"],
-      function(__dependency1__, __dependency2__, __dependency3__, __exports__) {
-        "use strict";
-        var SafeString = __dependency1__["default"];
-        var escapeExpression = __dependency2__.escapeExpression;
-        var getAttrNamespace = __dependency3__.getAttrNamespace;
+    ["./htmlbars-util/safe-string","./htmlbars-util/handlebars/utils","./htmlbars-util/namespaces","exports"],
+    function(__dependency1__, __dependency2__, __dependency3__, __exports__) {
+      "use strict";
+      var SafeString = __dependency1__["default"];
+      var escapeExpression = __dependency2__.escapeExpression;
+      var getAttrNamespace = __dependency3__.getAttrNamespace;
 
-        __exports__.SafeString = SafeString;
-        __exports__.escapeExpression = escapeExpression;
-        __exports__.getAttrNamespace = getAttrNamespace;
-      });
+      __exports__.SafeString = SafeString;
+      __exports__.escapeExpression = escapeExpression;
+      __exports__.getAttrNamespace = getAttrNamespace;
+    });
   enifed("htmlbars-util/array-utils",
-      ["exports"],
-      function(__exports__) {
-        "use strict";
-        function forEach(array, callback, binding) {
-          var i, l;
-          if (binding === undefined) {
-            for (i = 0, l = array.length; i < l; i++) {
-              callback(array[i], i, array);
-            }
-          } else {
-            for (i = 0, l = array.length; i < l; i++) {
-              callback.call(binding, array[i], i, array);
-            }
-          }
-        }
-
-        __exports__.forEach = forEach;function map(array, callback) {
-          var output = [];
-          var i, l;
-
+    ["exports"],
+    function(__exports__) {
+      "use strict";
+      function forEach(array, callback, binding) {
+        var i, l;
+        if (binding === undefined) {
           for (i = 0, l = array.length; i < l; i++) {
-            output.push(callback(array[i], i, array));
+            callback(array[i], i, array);
           }
-
-          return output;
-        }
-
-        __exports__.map = map;var getIdx;
-        if (Array.prototype.indexOf) {
-          getIdx = function(array, obj, from){
-            return array.indexOf(obj, from);
-          };
         } else {
-          getIdx = function(array, obj, from) {
-            if (from === undefined || from === null) {
-              from = 0;
-            } else if (from < 0) {
-              from = Math.max(0, array.length + from);
-            }
-            for (var i = from, l= array.length; i < l; i++) {
-              if (array[i] === obj) {
-                return i;
-              }
-            }
-            return -1;
-          };
+          for (i = 0, l = array.length; i < l; i++) {
+            callback.call(binding, array[i], i, array);
+          }
+        }
+      }
+
+      __exports__.forEach = forEach;function map(array, callback) {
+        var output = [];
+        var i, l;
+
+        for (i = 0, l = array.length; i < l; i++) {
+          output.push(callback(array[i], i, array));
         }
 
-        var indexOfArray = getIdx;
-        __exports__.indexOfArray = indexOfArray;
-      });
+        return output;
+      }
+
+      __exports__.map = map;var getIdx;
+      if (Array.prototype.indexOf) {
+        getIdx = function(array, obj, from){
+          return array.indexOf(obj, from);
+        };
+      } else {
+        getIdx = function(array, obj, from) {
+          if (from === undefined || from === null) {
+            from = 0;
+          } else if (from < 0) {
+            from = Math.max(0, array.length + from);
+          }
+          for (var i = from, l= array.length; i < l; i++) {
+            if (array[i] === obj) {
+              return i;
+            }
+          }
+          return -1;
+        };
+      }
+
+      var indexOfArray = getIdx;
+      __exports__.indexOfArray = indexOfArray;
+    });
   enifed("htmlbars-util/handlebars/safe-string",
-      ["exports"],
-      function(__exports__) {
-        "use strict";
-        // Build out our basic SafeString type
-        function SafeString(string) {
-          this.string = string;
-        }
+    ["exports"],
+    function(__exports__) {
+      "use strict";
+      // Build out our basic SafeString type
+      function SafeString(string) {
+        this.string = string;
+      }
 
-        SafeString.prototype.toString = SafeString.prototype.toHTML = function() {
-          return "" + this.string;
-        };
+      SafeString.prototype.toString = SafeString.prototype.toHTML = function() {
+        return "" + this.string;
+      };
 
-        __exports__["default"] = SafeString;
-      });
+      __exports__["default"] = SafeString;
+    });
   enifed("htmlbars-util/handlebars/utils",
-      ["./safe-string","exports"],
-      function(__dependency1__, __exports__) {
-        "use strict";
-        /*jshint -W004 */
-        var SafeString = __dependency1__["default"];
+    ["./safe-string","exports"],
+    function(__dependency1__, __exports__) {
+      "use strict";
+      /*jshint -W004 */
+      var SafeString = __dependency1__["default"];
 
-        var escape = {
-          "&": "&amp;",
-          "<": "&lt;",
-          ">": "&gt;",
-          '"': "&quot;",
-          "'": "&#x27;",
-          "`": "&#x60;"
-        };
+      var escape = {
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#x27;",
+        "`": "&#x60;"
+      };
 
-        var badChars = /[&<>"'`]/g;
-        var possible = /[&<>"'`]/;
+      var badChars = /[&<>"'`]/g;
+      var possible = /[&<>"'`]/;
 
-        function escapeChar(chr) {
-          return escape[chr];
-        }
+      function escapeChar(chr) {
+        return escape[chr];
+      }
 
-        function extend(obj /* , ...source */) {
-          for (var i = 1; i < arguments.length; i++) {
-            for (var key in arguments[i]) {
-              if (Object.prototype.hasOwnProperty.call(arguments[i], key)) {
-                obj[key] = arguments[i][key];
-              }
+      function extend(obj /* , ...source */) {
+        for (var i = 1; i < arguments.length; i++) {
+          for (var key in arguments[i]) {
+            if (Object.prototype.hasOwnProperty.call(arguments[i], key)) {
+              obj[key] = arguments[i][key];
             }
           }
-
-          return obj;
         }
 
-        __exports__.extend = extend;var toString = Object.prototype.toString;
-        __exports__.toString = toString;
-        // Sourced from lodash
-        // https://github.com/bestiejs/lodash/blob/master/LICENSE.txt
-        var isFunction = function(value) {
-          return typeof value === 'function';
+        return obj;
+      }
+
+      __exports__.extend = extend;var toString = Object.prototype.toString;
+      __exports__.toString = toString;
+      // Sourced from lodash
+      // https://github.com/bestiejs/lodash/blob/master/LICENSE.txt
+      var isFunction = function(value) {
+        return typeof value === 'function';
+      };
+      // fallback for older versions of Chrome and Safari
+      /* istanbul ignore next */
+      if (isFunction(/x/)) {
+        isFunction = function(value) {
+          return typeof value === 'function' && toString.call(value) === '[object Function]';
         };
-        // fallback for older versions of Chrome and Safari
-        /* istanbul ignore next */
-        if (isFunction(/x/)) {
-          isFunction = function(value) {
-            return typeof value === 'function' && toString.call(value) === '[object Function]';
-          };
-        }
-        var isFunction;
-        __exports__.isFunction = isFunction;
-        /* istanbul ignore next */
-        var isArray = Array.isArray || function(value) {
-              return (value && typeof value === 'object') ? toString.call(value) === '[object Array]' : false;
-            };
-        __exports__.isArray = isArray;
+      }
+      var isFunction;
+      __exports__.isFunction = isFunction;
+      /* istanbul ignore next */
+      var isArray = Array.isArray || function(value) {
+          return (value && typeof value === 'object') ? toString.call(value) === '[object Array]' : false;
+        };
+      __exports__.isArray = isArray;
 
-        function escapeExpression(string) {
-          // don't escape SafeStrings, since they're already safe
-          if (string && string.toHTML) {
-            return string.toHTML();
-          } else if (string == null) {
-            return "";
-          } else if (!string) {
-            return string + '';
-          }
-
-          // Force a string conversion as this will be done by the append regardless and
-          // the regex test will do this transparently behind the scenes, causing issues if
-          // an object's to string has escaped characters in it.
-          string = "" + string;
-
-          if(!possible.test(string)) { return string; }
-          return string.replace(badChars, escapeChar);
+      function escapeExpression(string) {
+        // don't escape SafeStrings, since they're already safe
+        if (string && string.toHTML) {
+          return string.toHTML();
+        } else if (string == null) {
+          return "";
+        } else if (!string) {
+          return string + '';
         }
 
-        __exports__.escapeExpression = escapeExpression;function isEmpty(value) {
-          if (!value && value !== 0) {
-            return true;
-          } else if (isArray(value) && value.length === 0) {
-            return true;
-          } else {
-            return false;
-          }
-        }
+        // Force a string conversion as this will be done by the append regardless and
+        // the regex test will do this transparently behind the scenes, causing issues if
+        // an object's to string has escaped characters in it.
+        string = "" + string;
 
-        __exports__.isEmpty = isEmpty;function appendContextPath(contextPath, id) {
-          return (contextPath ? contextPath + '.' : '') + id;
-        }
+        if(!possible.test(string)) { return string; }
+        return string.replace(badChars, escapeChar);
+      }
 
-        __exports__.appendContextPath = appendContextPath;
-      });
+      __exports__.escapeExpression = escapeExpression;function isEmpty(value) {
+        if (!value && value !== 0) {
+          return true;
+        } else if (isArray(value) && value.length === 0) {
+          return true;
+        } else {
+          return false;
+        }
+      }
+
+      __exports__.isEmpty = isEmpty;function appendContextPath(contextPath, id) {
+        return (contextPath ? contextPath + '.' : '') + id;
+      }
+
+      __exports__.appendContextPath = appendContextPath;
+    });
   enifed("htmlbars-util/namespaces",
-      ["exports"],
-      function(__exports__) {
-        "use strict";
-        // ref http://dev.w3.org/html5/spec-LC/namespaces.html
-        var defaultNamespaces = {
-          html: 'http://www.w3.org/1999/xhtml',
-          mathml: 'http://www.w3.org/1998/Math/MathML',
-          svg: 'http://www.w3.org/2000/svg',
-          xlink: 'http://www.w3.org/1999/xlink',
-          xml: 'http://www.w3.org/XML/1998/namespace'
-        };
+    ["exports"],
+    function(__exports__) {
+      "use strict";
+      // ref http://dev.w3.org/html5/spec-LC/namespaces.html
+      var defaultNamespaces = {
+        html: 'http://www.w3.org/1999/xhtml',
+        mathml: 'http://www.w3.org/1998/Math/MathML',
+        svg: 'http://www.w3.org/2000/svg',
+        xlink: 'http://www.w3.org/1999/xlink',
+        xml: 'http://www.w3.org/XML/1998/namespace'
+      };
 
-        function getAttrNamespace(attrName) {
-          var namespace;
+      function getAttrNamespace(attrName) {
+        var namespace;
 
-          var colonIndex = attrName.indexOf(':');
-          if (colonIndex !== -1) {
-            var prefix = attrName.slice(0, colonIndex);
-            namespace = defaultNamespaces[prefix];
-          }
-
-          return namespace || null;
+        var colonIndex = attrName.indexOf(':');
+        if (colonIndex !== -1) {
+          var prefix = attrName.slice(0, colonIndex);
+          namespace = defaultNamespaces[prefix];
         }
 
-        __exports__.getAttrNamespace = getAttrNamespace;
-      });
+        return namespace || null;
+      }
+
+      __exports__.getAttrNamespace = getAttrNamespace;
+    });
   enifed("htmlbars-util/object-utils",
-      ["exports"],
-      function(__exports__) {
-        "use strict";
-        function merge(options, defaults) {
-          for (var prop in defaults) {
-            if (options.hasOwnProperty(prop)) { continue; }
-            options[prop] = defaults[prop];
-          }
-          return options;
+    ["exports"],
+    function(__exports__) {
+      "use strict";
+      function merge(options, defaults) {
+        for (var prop in defaults) {
+          if (options.hasOwnProperty(prop)) { continue; }
+          options[prop] = defaults[prop];
         }
+        return options;
+      }
 
-        __exports__.merge = merge;
-      });
+      __exports__.merge = merge;
+    });
   enifed("htmlbars-util/quoting",
-      ["exports"],
-      function(__exports__) {
-        "use strict";
-        function escapeString(str) {
-          str = str.replace(/\\/g, "\\\\");
-          str = str.replace(/"/g, '\\"');
-          str = str.replace(/\n/g, "\\n");
-          return str;
+    ["exports"],
+    function(__exports__) {
+      "use strict";
+      function escapeString(str) {
+        str = str.replace(/\\/g, "\\\\");
+        str = str.replace(/"/g, '\\"');
+        str = str.replace(/\n/g, "\\n");
+        return str;
+      }
+
+      __exports__.escapeString = escapeString;
+
+      function string(str) {
+        return '"' + escapeString(str) + '"';
+      }
+
+      __exports__.string = string;
+
+      function array(a) {
+        return "[" + a + "]";
+      }
+
+      __exports__.array = array;
+
+      function hash(pairs) {
+        return "{" + pairs.join(", ") + "}";
+      }
+
+      __exports__.hash = hash;function repeat(chars, times) {
+        var str = "";
+        while (times--) {
+          str += chars;
         }
+        return str;
+      }
 
-        __exports__.escapeString = escapeString;
-
-        function string(str) {
-          return '"' + escapeString(str) + '"';
-        }
-
-        __exports__.string = string;
-
-        function array(a) {
-          return "[" + a + "]";
-        }
-
-        __exports__.array = array;
-
-        function hash(pairs) {
-          return "{" + pairs.join(", ") + "}";
-        }
-
-        __exports__.hash = hash;function repeat(chars, times) {
-          var str = "";
-          while (times--) {
-            str += chars;
-          }
-          return str;
-        }
-
-        __exports__.repeat = repeat;
-      });
+      __exports__.repeat = repeat;
+    });
   enifed("htmlbars-util/safe-string",
-      ["./handlebars/safe-string","exports"],
-      function(__dependency1__, __exports__) {
-        "use strict";
-        var SafeString = __dependency1__["default"];
+    ["./handlebars/safe-string","exports"],
+    function(__dependency1__, __exports__) {
+      "use strict";
+      var SafeString = __dependency1__["default"];
 
-        __exports__["default"] = SafeString;
-      });
+      __exports__["default"] = SafeString;
+    });
   enifed("morph-attr",
-      ["./morph-attr/sanitize-attribute-value","./dom-helper/prop","./dom-helper/build-html-dom","./htmlbars-util","exports"],
-      function(__dependency1__, __dependency2__, __dependency3__, __dependency4__, __exports__) {
-        "use strict";
-        var sanitizeAttributeValue = __dependency1__.sanitizeAttributeValue;
-        var isAttrRemovalValue = __dependency2__.isAttrRemovalValue;
-        var normalizeProperty = __dependency2__.normalizeProperty;
-        var svgNamespace = __dependency3__.svgNamespace;
-        var getAttrNamespace = __dependency4__.getAttrNamespace;
+    ["./morph-attr/sanitize-attribute-value","./dom-helper/prop","./dom-helper/build-html-dom","./htmlbars-util","exports"],
+    function(__dependency1__, __dependency2__, __dependency3__, __dependency4__, __exports__) {
+      "use strict";
+      var sanitizeAttributeValue = __dependency1__.sanitizeAttributeValue;
+      var isAttrRemovalValue = __dependency2__.isAttrRemovalValue;
+      var normalizeProperty = __dependency2__.normalizeProperty;
+      var svgNamespace = __dependency3__.svgNamespace;
+      var getAttrNamespace = __dependency4__.getAttrNamespace;
 
-        function updateProperty(value) {
-          this.domHelper.setPropertyStrict(this.element, this.attrName, value);
+      function updateProperty(value) {
+        this.domHelper.setPropertyStrict(this.element, this.attrName, value);
+      }
+
+      function updateAttribute(value) {
+        if (isAttrRemovalValue(value)) {
+          this.domHelper.removeAttribute(this.element, this.attrName);
+        } else {
+          this.domHelper.setAttribute(this.element, this.attrName, value);
         }
+      }
 
-        function updateAttribute(value) {
-          if (isAttrRemovalValue(value)) {
-            this.domHelper.removeAttribute(this.element, this.attrName);
-          } else {
-            this.domHelper.setAttribute(this.element, this.attrName, value);
-          }
+      function updateAttributeNS(value) {
+        if (isAttrRemovalValue(value)) {
+          this.domHelper.removeAttribute(this.element, this.attrName);
+        } else {
+          this.domHelper.setAttributeNS(this.element, this.namespace, this.attrName, value);
         }
+      }
 
-        function updateAttributeNS(value) {
-          if (isAttrRemovalValue(value)) {
-            this.domHelper.removeAttribute(this.element, this.attrName);
-          } else {
-            this.domHelper.setAttributeNS(this.element, this.namespace, this.attrName, value);
-          }
-        }
+      function AttrMorph(element, attrName, domHelper, namespace) {
+        this.element = element;
+        this.domHelper = domHelper;
+        this.namespace = namespace !== undefined ? namespace : getAttrNamespace(attrName);
+        this.escaped = true;
 
-        function AttrMorph(element, attrName, domHelper, namespace) {
-          this.element = element;
-          this.domHelper = domHelper;
-          this.namespace = namespace !== undefined ? namespace : getAttrNamespace(attrName);
-          this.escaped = true;
-
-          var normalizedAttrName = normalizeProperty(this.element, attrName);
-          if (this.namespace) {
-            this._update = updateAttributeNS;
+        var normalizedAttrName = normalizeProperty(this.element, attrName);
+        if (this.namespace) {
+          this._update = updateAttributeNS;
+          this.attrName = attrName;
+        } else {
+          if (element.namespaceURI === svgNamespace || attrName === 'style' || !normalizedAttrName) {
             this.attrName = attrName;
+            this._update = updateAttribute;
           } else {
-            if (element.namespaceURI === svgNamespace || attrName === 'style' || !normalizedAttrName) {
-              this.attrName = attrName;
-              this._update = updateAttribute;
-            } else {
-              this.attrName = normalizedAttrName;
-              this._update = updateProperty;
-            }
+            this.attrName = normalizedAttrName;
+            this._update = updateProperty;
           }
         }
+      }
 
-        AttrMorph.prototype.setContent = function (value) {
-          if (this.escaped) {
-            var sanitized = sanitizeAttributeValue(this.domHelper, this.element, this.attrName, value);
-            this._update(sanitized, this.namespace);
-          } else {
-            this._update(value, this.namespace);
-          }
-        };
+      AttrMorph.prototype.setContent = function (value) {
+        if (this.escaped) {
+          var sanitized = sanitizeAttributeValue(this.domHelper, this.element, this.attrName, value);
+          this._update(sanitized, this.namespace);
+        } else {
+          this._update(value, this.namespace);
+        }
+      };
 
-        __exports__["default"] = AttrMorph;
+      __exports__["default"] = AttrMorph;
 
-        __exports__.sanitizeAttributeValue = sanitizeAttributeValue;
-      });
+      __exports__.sanitizeAttributeValue = sanitizeAttributeValue;
+    });
   enifed("morph-attr/sanitize-attribute-value",
-      ["exports"],
-      function(__exports__) {
-        "use strict";
-        /* jshint scripturl:true */
+    ["exports"],
+    function(__exports__) {
+      "use strict";
+      /* jshint scripturl:true */
 
-        var badProtocols = {
-          'javascript:': true,
-          'vbscript:': true
-        };
+      var badProtocols = {
+        'javascript:': true,
+        'vbscript:': true
+      };
 
-        var badTags = {
-          'A': true,
-          'BODY': true,
-          'LINK': true,
-          'IMG': true,
-          'IFRAME': true,
-          'BASE': true
-        };
+      var badTags = {
+        'A': true,
+        'BODY': true,
+        'LINK': true,
+        'IMG': true,
+        'IFRAME': true,
+        'BASE': true
+      };
 
-        var badTagsForDataURI = {
-          'EMBED': true
-        };
+      var badTagsForDataURI = {
+        'EMBED': true
+      };
 
-        var badAttributes = {
-          'href': true,
-          'src': true,
-          'background': true
-        };
-        __exports__.badAttributes = badAttributes;
-        var badAttributesForDataURI = {
-          'src': true
-        };
+      var badAttributes = {
+        'href': true,
+        'src': true,
+        'background': true
+      };
+      __exports__.badAttributes = badAttributes;
+      var badAttributesForDataURI = {
+        'src': true
+      };
 
-        function sanitizeAttributeValue(dom, element, attribute, value) {
-          var tagName;
+      function sanitizeAttributeValue(dom, element, attribute, value) {
+        var tagName;
 
-          if (!element) {
-            tagName = null;
-          } else {
-            tagName = element.tagName.toUpperCase();
-          }
+        if (!element) {
+          tagName = null;
+        } else {
+          tagName = element.tagName.toUpperCase();
+        }
 
-          if (value && value.toHTML) {
-            return value.toHTML();
-          }
+        if (value && value.toHTML) {
+          return value.toHTML();
+        }
 
-          if ((tagName === null || badTags[tagName]) && badAttributes[attribute]) {
-            var protocol = dom.protocolForURL(value);
-            if (badProtocols[protocol] === true) {
-              return 'unsafe:' + value;
-            }
-          }
-
-          if (badTagsForDataURI[tagName] && badAttributesForDataURI[attribute]) {
+        if ((tagName === null || badTags[tagName]) && badAttributes[attribute]) {
+          var protocol = dom.protocolForURL(value);
+          if (badProtocols[protocol] === true) {
             return 'unsafe:' + value;
           }
-
-          return value;
         }
 
-        __exports__.sanitizeAttributeValue = sanitizeAttributeValue;
-      });
+        if (badTagsForDataURI[tagName] && badAttributesForDataURI[attribute]) {
+          return 'unsafe:' + value;
+        }
+
+        return value;
+      }
+
+      __exports__.sanitizeAttributeValue = sanitizeAttributeValue;
+    });
   enifed("morph-range",
-      ["./morph-range/utils","exports"],
-      function(__dependency1__, __exports__) {
-        "use strict";
-        var clear = __dependency1__.clear;
-        var insertBefore = __dependency1__.insertBefore;
+    ["./morph-range/utils","exports"],
+    function(__dependency1__, __exports__) {
+      "use strict";
+      var clear = __dependency1__.clear;
+      var insertBefore = __dependency1__.insertBefore;
 
-        function Morph(domHelper, contextualElement) {
-          this.domHelper = domHelper;
-          // context if content if current content is detached
-          this.contextualElement = contextualElement;
+      function Morph(domHelper, contextualElement) {
+        this.domHelper = domHelper;
+        // context if content if current content is detached
+        this.contextualElement = contextualElement;
 
-          // flag to force text to setContent to be treated as html
-          this.parseTextAsHTML = false;
+        // flag to force text to setContent to be treated as html
+        this.parseTextAsHTML = false;
 
-          this.firstNode = null;
-          this.lastNode  = null;
+        this.firstNode = null;
+        this.lastNode  = null;
 
-          // morph graph
-          this.parentMorph     = null;
-          this.firstChildMorph = null;
-          this.lastChildMorph  = null;
+        // morph graph
+        this.parentMorph     = null;
+        this.firstChildMorph = null;
+        this.lastChildMorph  = null;
 
-          this.previousMorph = null;
-          this.nextMorph = null;
+        this.previousMorph = null;
+        this.nextMorph = null;
+      }
+
+      Morph.prototype.setContent = function Morph$setContent(content) {
+        if (content === null || content === undefined) {
+          return this.clear();
         }
 
-        Morph.prototype.setContent = function Morph$setContent(content) {
-          if (content === null || content === undefined) {
-            return this.clear();
-          }
-
-          var type = typeof content;
-          switch (type) {
-            case 'string':
-              if (this.parseTextAsHTML) {
-                return this.setHTML(content);
-              }
-              return this.setText(content);
-            case 'object':
-              if (typeof content.nodeType === 'number') {
-                return this.setNode(content);
-              }
-              /* Handlebars.SafeString */
-              if (typeof content.toHTML === 'function') {
-                return this.setHTML(content.toHTML());
-              }
-              if (this.parseTextAsHTML) {
-                return this.setHTML(content.toString());
-              }
-            /* falls through */
-            case 'boolean':
-            case 'number':
-              return this.setText(content.toString());
-            default:
-              throw new TypeError('unsupported content');
-          }
-        };
-
-        Morph.prototype.clear = function Morph$clear() {
-          return this.setNode(this.domHelper.createComment(''));
-        };
-
-        Morph.prototype.setText = function Morph$setText(text) {
-          var firstNode = this.firstNode;
-          var lastNode = this.lastNode;
-
-          if (firstNode &&
-              lastNode === firstNode &&
-              firstNode.nodeType === 3) {
-            firstNode.nodeValue = text;
-            return firstNode;
-          }
-
-          return this.setNode(
-              text ? this.domHelper.createTextNode(text) : this.domHelper.createComment('')
-          );
-        };
-
-        Morph.prototype.setNode = function Morph$setNode(newNode) {
-          var firstNode, lastNode;
-          switch (newNode.nodeType) {
-            case 3:
-              firstNode = newNode;
-              lastNode = newNode;
-              break;
-            case 11:
-              firstNode = newNode.firstChild;
-              lastNode = newNode.lastChild;
-              if (firstNode === null) {
-                firstNode = this.domHelper.createComment('');
-                newNode.appendChild(firstNode);
-                lastNode = firstNode;
-              }
-              break;
-            default:
-              firstNode = newNode;
-              lastNode = newNode;
-              break;
-          }
-
-          var previousFirstNode = this.firstNode;
-          if (previousFirstNode !== null) {
-
-            var parentNode = previousFirstNode.parentNode;
-            insertBefore(parentNode, firstNode, lastNode, previousFirstNode);
-            clear(parentNode, previousFirstNode, this.lastNode);
-          }
-
-          this.firstNode = firstNode;
-          this.lastNode  = lastNode;
-
-          if (this.parentMorph) {
-            syncFirstNode(this);
-            syncLastNode(this);
-          }
-
-          return newNode;
-        };
-
-        function syncFirstNode(_morph) {
-          var morph = _morph;
-          var parentMorph;
-          while (parentMorph = morph.parentMorph) {
-            if (morph !== parentMorph.firstChildMorph) {
-              break;
+        var type = typeof content;
+        switch (type) {
+          case 'string':
+            if (this.parseTextAsHTML) {
+              return this.setHTML(content);
             }
-            if (morph.firstNode === parentMorph.firstNode) {
-              break;
+            return this.setText(content);
+          case 'object':
+            if (typeof content.nodeType === 'number') {
+              return this.setNode(content);
             }
+            /* Handlebars.SafeString */
+            if (typeof content.toHTML === 'function') {
+              return this.setHTML(content.toHTML());
+            }
+            if (this.parseTextAsHTML) {
+              return this.setHTML(content.toString());
+            }
+          /* falls through */
+          case 'boolean':
+          case 'number':
+            return this.setText(content.toString());
+          default:
+            throw new TypeError('unsupported content');
+        }
+      };
 
-            parentMorph.firstNode = morph.firstNode;
+      Morph.prototype.clear = function Morph$clear() {
+        return this.setNode(this.domHelper.createComment(''));
+      };
 
-            morph = parentMorph;
+      Morph.prototype.setText = function Morph$setText(text) {
+        var firstNode = this.firstNode;
+        var lastNode = this.lastNode;
+
+        if (firstNode &&
+          lastNode === firstNode &&
+          firstNode.nodeType === 3) {
+          firstNode.nodeValue = text;
+          return firstNode;
+        }
+
+        return this.setNode(
+          text ? this.domHelper.createTextNode(text) : this.domHelper.createComment('')
+        );
+      };
+
+      Morph.prototype.setNode = function Morph$setNode(newNode) {
+        var firstNode, lastNode;
+        switch (newNode.nodeType) {
+          case 3:
+            firstNode = newNode;
+            lastNode = newNode;
+            break;
+          case 11:
+            firstNode = newNode.firstChild;
+            lastNode = newNode.lastChild;
+            if (firstNode === null) {
+              firstNode = this.domHelper.createComment('');
+              newNode.appendChild(firstNode);
+              lastNode = firstNode;
+            }
+            break;
+          default:
+            firstNode = newNode;
+            lastNode = newNode;
+            break;
+        }
+
+        var previousFirstNode = this.firstNode;
+        if (previousFirstNode !== null) {
+
+          var parentNode = previousFirstNode.parentNode;
+          insertBefore(parentNode, firstNode, lastNode, previousFirstNode);
+          clear(parentNode, previousFirstNode, this.lastNode);
+        }
+
+        this.firstNode = firstNode;
+        this.lastNode  = lastNode;
+
+        if (this.parentMorph) {
+          syncFirstNode(this);
+          syncLastNode(this);
+        }
+
+        return newNode;
+      };
+
+      function syncFirstNode(_morph) {
+        var morph = _morph;
+        var parentMorph;
+        while (parentMorph = morph.parentMorph) {
+          if (morph !== parentMorph.firstChildMorph) {
+            break;
+          }
+          if (morph.firstNode === parentMorph.firstNode) {
+            break;
+          }
+
+          parentMorph.firstNode = morph.firstNode;
+
+          morph = parentMorph;
+        }
+      }
+
+      function syncLastNode(_morph) {
+        var morph = _morph;
+        var parentMorph;
+        while (parentMorph = morph.parentMorph) {
+          if (morph !== parentMorph.lastChildMorph) {
+            break;
+          }
+          if (morph.lastNode === parentMorph.lastNode) {
+            break;
+          }
+
+          parentMorph.lastNode = morph.lastNode;
+
+          morph = parentMorph;
+        }
+      }
+
+      // return morph content to an undifferentiated state
+      // drops knowledge that the node has content.
+      // this is for rerender, I need to test, but basically
+      // the idea is to leave the content, but allow render again
+      // without appending, so n
+      Morph.prototype.reset = function Morph$reset() {
+        this.firstChildMorph = null;
+        this.lastChildMorph = null;
+      };
+
+      Morph.prototype.destroy = function Morph$destroy() {
+        var parentMorph = this.parentMorph;
+        var previousMorph = this.previousMorph;
+        var nextMorph = this.nextMorph;
+        var firstNode = this.firstNode;
+        var lastNode = this.lastNode;
+        var parentNode = firstNode && firstNode.parentNode;
+
+        if (previousMorph) {
+          if (nextMorph) {
+            previousMorph.nextMorph = nextMorph;
+            nextMorph.previousMorph = previousMorph;
+          } else {
+            previousMorph.nextMorph = null;
+            if (parentMorph) { parentMorph.lastChildMorph = previousMorph; }
+          }
+        } else {
+          if (nextMorph) {
+            nextMorph.previousMorph = null;
+            if (parentMorph) { parentMorph.firstChildMorph = nextMorph; }
+          } else if (parentMorph) {
+            parentMorph.lastChildMorph = parentMorph.firstChildMorph = null;
           }
         }
 
-        function syncLastNode(_morph) {
-          var morph = _morph;
-          var parentMorph;
-          while (parentMorph = morph.parentMorph) {
-            if (morph !== parentMorph.lastChildMorph) {
-              break;
-            }
-            if (morph.lastNode === parentMorph.lastNode) {
-              break;
-            }
+        this.parentMorph = null;
+        this.firstNode = null;
+        this.lastNode = null;
 
-            parentMorph.lastNode = morph.lastNode;
-
-            morph = parentMorph;
+        if (parentMorph) {
+          if (!parentMorph.firstChildMorph) {
+            // list is empty
+            parentMorph.clear();
+            return;
+          } else {
+            syncFirstNode(parentMorph.firstChildMorph);
+            syncLastNode(parentMorph.lastChildMorph);
           }
         }
 
-        // return morph content to an undifferentiated state
-        // drops knowledge that the node has content.
-        // this is for rerender, I need to test, but basically
-        // the idea is to leave the content, but allow render again
-        // without appending, so n
-        Morph.prototype.reset = function Morph$reset() {
-          this.firstChildMorph = null;
-          this.lastChildMorph = null;
-        };
+        clear(parentNode, firstNode, lastNode);
+      };
 
-        Morph.prototype.destroy = function Morph$destroy() {
-          var parentMorph = this.parentMorph;
-          var previousMorph = this.previousMorph;
-          var nextMorph = this.nextMorph;
-          var firstNode = this.firstNode;
-          var lastNode = this.lastNode;
-          var parentNode = firstNode && firstNode.parentNode;
+      Morph.prototype.setHTML = function(text) {
+        var fragment = this.domHelper.parseHTML(text, this.contextualElement);
+        return this.setNode(fragment);
+      };
 
-          if (previousMorph) {
-            if (nextMorph) {
-              previousMorph.nextMorph = nextMorph;
-              nextMorph.previousMorph = previousMorph;
-            } else {
-              previousMorph.nextMorph = null;
-              if (parentMorph) { parentMorph.lastChildMorph = previousMorph; }
-            }
-          } else {
-            if (nextMorph) {
-              nextMorph.previousMorph = null;
-              if (parentMorph) { parentMorph.firstChildMorph = nextMorph; }
-            } else if (parentMorph) {
-              parentMorph.lastChildMorph = parentMorph.firstChildMorph = null;
-            }
-          }
+      Morph.prototype.appendContent = function(content) {
+        return this.insertContentBeforeMorph(content, null);
+      };
 
-          this.parentMorph = null;
-          this.firstNode = null;
-          this.lastNode = null;
+      Morph.prototype.insertContentBeforeMorph = function (content, referenceMorph) {
+        var morph = new Morph(this.domHelper, this.contextualElement);
+        morph.setContent(content);
+        this.insertBeforeMorph(morph, referenceMorph);
+        return morph;
+      };
 
-          if (parentMorph) {
-            if (!parentMorph.firstChildMorph) {
-              // list is empty
-              parentMorph.clear();
-              return;
-            } else {
-              syncFirstNode(parentMorph.firstChildMorph);
-              syncLastNode(parentMorph.lastChildMorph);
-            }
-          }
+      Morph.prototype.appendMorph = function(morph) {
+        this.insertBeforeMorph(morph, null);
+      };
 
-          clear(parentNode, firstNode, lastNode);
-        };
+      Morph.prototype.insertBeforeMorph = function(morph, referenceMorph) {
+        if (referenceMorph && referenceMorph.parentMorph !== this) {
+          throw new Error('The morph before which the new morph is to be inserted is not a child of this morph.');
+        }
 
-        Morph.prototype.setHTML = function(text) {
-          var fragment = this.domHelper.parseHTML(text, this.contextualElement);
-          return this.setNode(fragment);
-        };
+        morph.parentMorph = this;
 
-        Morph.prototype.appendContent = function(content) {
-          return this.insertContentBeforeMorph(content, null);
-        };
+        var parentNode = this.firstNode.parentNode;
 
-        Morph.prototype.insertContentBeforeMorph = function (content, referenceMorph) {
-          var morph = new Morph(this.domHelper, this.contextualElement);
-          morph.setContent(content);
-          this.insertBeforeMorph(morph, referenceMorph);
-          return morph;
-        };
+        insertBefore(
+          parentNode,
+          morph.firstNode,
+          morph.lastNode,
+          referenceMorph ? referenceMorph.firstNode : this.lastNode.nextSibling
+        );
 
-        Morph.prototype.appendMorph = function(morph) {
-          this.insertBeforeMorph(morph, null);
-        };
+        // was not in list mode replace current content
+        if (!this.firstChildMorph) {
+          clear(parentNode, this.firstNode, this.lastNode);
+        }
 
-        Morph.prototype.insertBeforeMorph = function(morph, referenceMorph) {
-          if (referenceMorph && referenceMorph.parentMorph !== this) {
-            throw new Error('The morph before which the new morph is to be inserted is not a child of this morph.');
-          }
+        var previousMorph = referenceMorph ? referenceMorph.previousMorph : this.lastChildMorph;
+        if (previousMorph) {
+          previousMorph.nextMorph = morph;
+          morph.previousMorph = previousMorph;
+        } else {
+          this.firstChildMorph = morph;
+        }
 
-          morph.parentMorph = this;
+        if (referenceMorph) {
+          referenceMorph.previousMorph = morph;
+          morph.nextMorph = referenceMorph;
+        } else {
+          this.lastChildMorph = morph;
+        }
 
-          var parentNode = this.firstNode.parentNode;
+        syncFirstNode(this.firstChildMorph);
+        syncLastNode(this.lastChildMorph);
+      };
 
-          insertBefore(
-              parentNode,
-              morph.firstNode,
-              morph.lastNode,
-              referenceMorph ? referenceMorph.firstNode : this.lastNode.nextSibling
-          );
-
-          // was not in list mode replace current content
-          if (!this.firstChildMorph) {
-            clear(parentNode, this.firstNode, this.lastNode);
-          }
-
-          var previousMorph = referenceMorph ? referenceMorph.previousMorph : this.lastChildMorph;
-          if (previousMorph) {
-            previousMorph.nextMorph = morph;
-            morph.previousMorph = previousMorph;
-          } else {
-            this.firstChildMorph = morph;
-          }
-
-          if (referenceMorph) {
-            referenceMorph.previousMorph = morph;
-            morph.nextMorph = referenceMorph;
-          } else {
-            this.lastChildMorph = morph;
-          }
-
-          syncFirstNode(this.firstChildMorph);
-          syncLastNode(this.lastChildMorph);
-        };
-
-        __exports__["default"] = Morph;
-      });
+      __exports__["default"] = Morph;
+    });
   enifed("morph-range/utils",
-      ["exports"],
-      function(__exports__) {
-        "use strict";
-        // inclusive of both nodes
-        function clear(parentNode, firstNode, lastNode) {
-          if (!parentNode) { return; }
+    ["exports"],
+    function(__exports__) {
+      "use strict";
+      // inclusive of both nodes
+      function clear(parentNode, firstNode, lastNode) {
+        if (!parentNode) { return; }
 
-          var node = firstNode;
-          var nextNode;
-          do {
-            nextNode = node.nextSibling;
-            parentNode.removeChild(node);
-            if (node === lastNode) {
-              break;
-            }
-            node = nextNode;
-          } while (node);
-        }
+        var node = firstNode;
+        var nextNode;
+        do {
+          nextNode = node.nextSibling;
+          parentNode.removeChild(node);
+          if (node === lastNode) {
+            break;
+          }
+          node = nextNode;
+        } while (node);
+      }
 
-        __exports__.clear = clear;function insertBefore(parentNode, firstNode, lastNode, _refNode) {
-          var node = lastNode;
-          var refNode = _refNode;
-          var prevNode;
-          do {
-            prevNode = node.previousSibling;
-            parentNode.insertBefore(node, refNode);
-            if (node === firstNode) {
-              break;
-            }
-            refNode = node;
-            node = prevNode;
-          } while (node);
-        }
+      __exports__.clear = clear;function insertBefore(parentNode, firstNode, lastNode, _refNode) {
+        var node = lastNode;
+        var refNode = _refNode;
+        var prevNode;
+        do {
+          prevNode = node.previousSibling;
+          parentNode.insertBefore(node, refNode);
+          if (node === firstNode) {
+            break;
+          }
+          refNode = node;
+          node = prevNode;
+        } while (node);
+      }
 
-        __exports__.insertBefore = insertBefore;
-      });
+      __exports__.insertBefore = insertBefore;
+    });
   enifed("route-recognizer",
-      ["./route-recognizer/dsl","exports"],
-      function(__dependency1__, __exports__) {
-        "use strict";
-        var map = __dependency1__["default"];
+    ["./route-recognizer/dsl","exports"],
+    function(__dependency1__, __exports__) {
+      "use strict";
+      var map = __dependency1__["default"];
 
-        var specials = [
-          '/', '.', '*', '+', '?', '|',
-          '(', ')', '[', ']', '{', '}', '\\'
-        ];
+      var specials = [
+        '/', '.', '*', '+', '?', '|',
+        '(', ')', '[', ']', '{', '}', '\\'
+      ];
 
-        var escapeRegex = new RegExp('(\\' + specials.join('|\\') + ')', 'g');
+      var escapeRegex = new RegExp('(\\' + specials.join('|\\') + ')', 'g');
 
-        function isArray(test) {
-          return Object.prototype.toString.call(test) === "[object Array]";
+      function isArray(test) {
+        return Object.prototype.toString.call(test) === "[object Array]";
+      }
+
+      // A Segment represents a segment in the original route description.
+      // Each Segment type provides an `eachChar` and `regex` method.
+      //
+      // The `eachChar` method invokes the callback with one or more character
+      // specifications. A character specification consumes one or more input
+      // characters.
+      //
+      // The `regex` method returns a regex fragment for the segment. If the
+      // segment is a dynamic of star segment, the regex fragment also includes
+      // a capture.
+      //
+      // A character specification contains:
+      //
+      // * `validChars`: a String with a list of all valid characters, or
+      // * `invalidChars`: a String with a list of all invalid characters
+      // * `repeat`: true if the character specification can repeat
+
+      function StaticSegment(string) { this.string = string; }
+      StaticSegment.prototype = {
+        eachChar: function(callback) {
+          var string = this.string, ch;
+
+          for (var i=0, l=string.length; i<l; i++) {
+            ch = string.charAt(i);
+            callback({ validChars: ch });
+          }
+        },
+
+        regex: function() {
+          return this.string.replace(escapeRegex, '\\$1');
+        },
+
+        generate: function() {
+          return this.string;
+        }
+      };
+
+      function DynamicSegment(name) { this.name = name; }
+      DynamicSegment.prototype = {
+        eachChar: function(callback) {
+          callback({ invalidChars: "/", repeat: true });
+        },
+
+        regex: function() {
+          return "([^/]+)";
+        },
+
+        generate: function(params) {
+          return params[this.name];
+        }
+      };
+
+      function StarSegment(name) { this.name = name; }
+      StarSegment.prototype = {
+        eachChar: function(callback) {
+          callback({ invalidChars: "", repeat: true });
+        },
+
+        regex: function() {
+          return "(.+)";
+        },
+
+        generate: function(params) {
+          return params[this.name];
+        }
+      };
+
+      function EpsilonSegment() {}
+      EpsilonSegment.prototype = {
+        eachChar: function() {},
+        regex: function() { return ""; },
+        generate: function() { return ""; }
+      };
+
+      function parse(route, names, types) {
+        // normalize route as not starting with a "/". Recognition will
+        // also normalize.
+        if (route.charAt(0) === "/") { route = route.substr(1); }
+
+        var segments = route.split("/"), results = [];
+
+        for (var i=0, l=segments.length; i<l; i++) {
+          var segment = segments[i], match;
+
+          if (match = segment.match(/^:([^\/]+)$/)) {
+            results.push(new DynamicSegment(match[1]));
+            names.push(match[1]);
+            types.dynamics++;
+          } else if (match = segment.match(/^\*([^\/]+)$/)) {
+            results.push(new StarSegment(match[1]));
+            names.push(match[1]);
+            types.stars++;
+          } else if(segment === "") {
+            results.push(new EpsilonSegment());
+          } else {
+            results.push(new StaticSegment(segment));
+            types.statics++;
+          }
         }
 
-        // A Segment represents a segment in the original route description.
-        // Each Segment type provides an `eachChar` and `regex` method.
-        //
-        // The `eachChar` method invokes the callback with one or more character
-        // specifications. A character specification consumes one or more input
-        // characters.
-        //
-        // The `regex` method returns a regex fragment for the segment. If the
-        // segment is a dynamic of star segment, the regex fragment also includes
-        // a capture.
-        //
-        // A character specification contains:
-        //
-        // * `validChars`: a String with a list of all valid characters, or
-        // * `invalidChars`: a String with a list of all invalid characters
-        // * `repeat`: true if the character specification can repeat
+        return results;
+      }
 
-        function StaticSegment(string) { this.string = string; }
-        StaticSegment.prototype = {
-          eachChar: function(callback) {
-            var string = this.string, ch;
+      // A State has a character specification and (`charSpec`) and a list of possible
+      // subsequent states (`nextStates`).
+      //
+      // If a State is an accepting state, it will also have several additional
+      // properties:
+      //
+      // * `regex`: A regular expression that is used to extract parameters from paths
+      //   that reached this accepting state.
+      // * `handlers`: Information on how to convert the list of captures into calls
+      //   to registered handlers with the specified parameters
+      // * `types`: How many static, dynamic or star segments in this route. Used to
+      //   decide which route to use if multiple registered routes match a path.
+      //
+      // Currently, State is implemented naively by looping over `nextStates` and
+      // comparing a character specification against a character. A more efficient
+      // implementation would use a hash of keys pointing at one or more next states.
 
-            for (var i=0, l=string.length; i<l; i++) {
-              ch = string.charAt(i);
-              callback({ validChars: ch });
-            }
-          },
+      function State(charSpec) {
+        this.charSpec = charSpec;
+        this.nextStates = [];
+      }
 
-          regex: function() {
-            return this.string.replace(escapeRegex, '\\$1');
-          },
+      State.prototype = {
+        get: function(charSpec) {
+          var nextStates = this.nextStates;
 
-          generate: function() {
-            return this.string;
+          for (var i=0, l=nextStates.length; i<l; i++) {
+            var child = nextStates[i];
+
+            var isEqual = child.charSpec.validChars === charSpec.validChars;
+            isEqual = isEqual && child.charSpec.invalidChars === charSpec.invalidChars;
+
+            if (isEqual) { return child; }
           }
-        };
+        },
 
-        function DynamicSegment(name) { this.name = name; }
-        DynamicSegment.prototype = {
-          eachChar: function(callback) {
-            callback({ invalidChars: "/", repeat: true });
-          },
+        put: function(charSpec) {
+          var state;
 
-          regex: function() {
-            return "([^/]+)";
-          },
+          // If the character specification already exists in a child of the current
+          // state, just return that state.
+          if (state = this.get(charSpec)) { return state; }
 
-          generate: function(params) {
-            return params[this.name];
+          // Make a new state for the character spec
+          state = new State(charSpec);
+
+          // Insert the new state as a child of the current state
+          this.nextStates.push(state);
+
+          // If this character specification repeats, insert the new state as a child
+          // of itself. Note that this will not trigger an infinite loop because each
+          // transition during recognition consumes a character.
+          if (charSpec.repeat) {
+            state.nextStates.push(state);
           }
-        };
 
-        function StarSegment(name) { this.name = name; }
-        StarSegment.prototype = {
-          eachChar: function(callback) {
-            callback({ invalidChars: "", repeat: true });
-          },
+          // Return the new state
+          return state;
+        },
 
-          regex: function() {
-            return "(.+)";
-          },
+        // Find a list of child states matching the next character
+        match: function(ch) {
+          // DEBUG "Processing `" + ch + "`:"
+          var nextStates = this.nextStates,
+            child, charSpec, chars;
 
-          generate: function(params) {
-            return params[this.name];
-          }
-        };
+          // DEBUG "  " + debugState(this)
+          var returned = [];
 
-        function EpsilonSegment() {}
-        EpsilonSegment.prototype = {
-          eachChar: function() {},
-          regex: function() { return ""; },
-          generate: function() { return ""; }
-        };
+          for (var i=0, l=nextStates.length; i<l; i++) {
+            child = nextStates[i];
 
-        function parse(route, names, types) {
-          // normalize route as not starting with a "/". Recognition will
-          // also normalize.
-          if (route.charAt(0) === "/") { route = route.substr(1); }
+            charSpec = child.charSpec;
 
-          var segments = route.split("/"), results = [];
-
-          for (var i=0, l=segments.length; i<l; i++) {
-            var segment = segments[i], match;
-
-            if (match = segment.match(/^:([^\/]+)$/)) {
-              results.push(new DynamicSegment(match[1]));
-              names.push(match[1]);
-              types.dynamics++;
-            } else if (match = segment.match(/^\*([^\/]+)$/)) {
-              results.push(new StarSegment(match[1]));
-              names.push(match[1]);
-              types.stars++;
-            } else if(segment === "") {
-              results.push(new EpsilonSegment());
-            } else {
-              results.push(new StaticSegment(segment));
-              types.statics++;
+            if (typeof (chars = charSpec.validChars) !== 'undefined') {
+              if (chars.indexOf(ch) !== -1) { returned.push(child); }
+            } else if (typeof (chars = charSpec.invalidChars) !== 'undefined') {
+              if (chars.indexOf(ch) === -1) { returned.push(child); }
             }
           }
 
-          return results;
+          return returned;
         }
 
-        // A State has a character specification and (`charSpec`) and a list of possible
-        // subsequent states (`nextStates`).
-        //
-        // If a State is an accepting state, it will also have several additional
-        // properties:
-        //
-        // * `regex`: A regular expression that is used to extract parameters from paths
-        //   that reached this accepting state.
-        // * `handlers`: Information on how to convert the list of captures into calls
-        //   to registered handlers with the specified parameters
-        // * `types`: How many static, dynamic or star segments in this route. Used to
-        //   decide which route to use if multiple registered routes match a path.
-        //
-        // Currently, State is implemented naively by looping over `nextStates` and
-        // comparing a character specification against a character. A more efficient
-        // implementation would use a hash of keys pointing at one or more next states.
-
-        function State(charSpec) {
-          this.charSpec = charSpec;
-          this.nextStates = [];
-        }
-
-        State.prototype = {
-          get: function(charSpec) {
-            var nextStates = this.nextStates;
-
-            for (var i=0, l=nextStates.length; i<l; i++) {
-              var child = nextStates[i];
-
-              var isEqual = child.charSpec.validChars === charSpec.validChars;
-              isEqual = isEqual && child.charSpec.invalidChars === charSpec.invalidChars;
-
-              if (isEqual) { return child; }
-            }
-          },
-
-          put: function(charSpec) {
-            var state;
-
-            // If the character specification already exists in a child of the current
-            // state, just return that state.
-            if (state = this.get(charSpec)) { return state; }
-
-            // Make a new state for the character spec
-            state = new State(charSpec);
-
-            // Insert the new state as a child of the current state
-            this.nextStates.push(state);
-
-            // If this character specification repeats, insert the new state as a child
-            // of itself. Note that this will not trigger an infinite loop because each
-            // transition during recognition consumes a character.
-            if (charSpec.repeat) {
-              state.nextStates.push(state);
-            }
-
-            // Return the new state
-            return state;
-          },
-
-          // Find a list of child states matching the next character
-          match: function(ch) {
-            // DEBUG "Processing `" + ch + "`:"
-            var nextStates = this.nextStates,
-                child, charSpec, chars;
-
-            // DEBUG "  " + debugState(this)
-            var returned = [];
-
-            for (var i=0, l=nextStates.length; i<l; i++) {
-              child = nextStates[i];
-
-              charSpec = child.charSpec;
-
-              if (typeof (chars = charSpec.validChars) !== 'undefined') {
-                if (chars.indexOf(ch) !== -1) { returned.push(child); }
-              } else if (typeof (chars = charSpec.invalidChars) !== 'undefined') {
-                if (chars.indexOf(ch) === -1) { returned.push(child); }
-              }
-            }
-
-            return returned;
-          }
-
-          /** IF DEBUG
-           , debug: function() {
+        /** IF DEBUG
+         , debug: function() {
         var charSpec = this.charSpec,
             debug = "[",
             chars = charSpec.validChars || charSpec.invalidChars;
@@ -42624,2980 +42624,2980 @@
 
         return debug;
       }
-           END IF **/
-        };
+         END IF **/
+      };
 
-        /** IF DEBUG
-         function debug(log) {
+      /** IF DEBUG
+       function debug(log) {
       console.log(log);
     }
 
-         function debugState(state) {
+       function debugState(state) {
       return state.nextStates.map(function(n) {
         if (n.nextStates.length === 0) { return "( " + n.debug() + " [accepting] )"; }
         return "( " + n.debug() + " <then> " + n.nextStates.map(function(s) { return s.debug() }).join(" or ") + " )";
       }).join(", ")
     }
-         END IF **/
+       END IF **/
 
-        // This is a somewhat naive strategy, but should work in a lot of cases
-        // A better strategy would properly resolve /posts/:id/new and /posts/edit/:id.
-        //
-        // This strategy generally prefers more static and less dynamic matching.
-        // Specifically, it
-        //
-        //  * prefers fewer stars to more, then
-        //  * prefers using stars for less of the match to more, then
-        //  * prefers fewer dynamic segments to more, then
-        //  * prefers more static segments to more
-        function sortSolutions(states) {
-          return states.sort(function(a, b) {
-            if (a.types.stars !== b.types.stars) { return a.types.stars - b.types.stars; }
+      // This is a somewhat naive strategy, but should work in a lot of cases
+      // A better strategy would properly resolve /posts/:id/new and /posts/edit/:id.
+      //
+      // This strategy generally prefers more static and less dynamic matching.
+      // Specifically, it
+      //
+      //  * prefers fewer stars to more, then
+      //  * prefers using stars for less of the match to more, then
+      //  * prefers fewer dynamic segments to more, then
+      //  * prefers more static segments to more
+      function sortSolutions(states) {
+        return states.sort(function(a, b) {
+          if (a.types.stars !== b.types.stars) { return a.types.stars - b.types.stars; }
 
-            if (a.types.stars) {
-              if (a.types.statics !== b.types.statics) { return b.types.statics - a.types.statics; }
-              if (a.types.dynamics !== b.types.dynamics) { return b.types.dynamics - a.types.dynamics; }
-            }
-
-            if (a.types.dynamics !== b.types.dynamics) { return a.types.dynamics - b.types.dynamics; }
+          if (a.types.stars) {
             if (a.types.statics !== b.types.statics) { return b.types.statics - a.types.statics; }
-
-            return 0;
-          });
-        }
-
-        function recognizeChar(states, ch) {
-          var nextStates = [];
-
-          for (var i=0, l=states.length; i<l; i++) {
-            var state = states[i];
-
-            nextStates = nextStates.concat(state.match(ch));
+            if (a.types.dynamics !== b.types.dynamics) { return b.types.dynamics - a.types.dynamics; }
           }
 
-          return nextStates;
-        }
+          if (a.types.dynamics !== b.types.dynamics) { return a.types.dynamics - b.types.dynamics; }
+          if (a.types.statics !== b.types.statics) { return b.types.statics - a.types.statics; }
 
-        var oCreate = Object.create || function(proto) {
-              function F() {}
-              F.prototype = proto;
-              return new F();
-            };
-
-        function RecognizeResults(queryParams) {
-          this.queryParams = queryParams || {};
-        }
-        RecognizeResults.prototype = oCreate({
-          splice: Array.prototype.splice,
-          slice:  Array.prototype.slice,
-          push:   Array.prototype.push,
-          length: 0,
-          queryParams: null
+          return 0;
         });
+      }
 
-        function findHandler(state, path, queryParams) {
-          var handlers = state.handlers, regex = state.regex;
-          var captures = path.match(regex), currentCapture = 1;
-          var result = new RecognizeResults(queryParams);
+      function recognizeChar(states, ch) {
+        var nextStates = [];
 
-          for (var i=0, l=handlers.length; i<l; i++) {
-            var handler = handlers[i], names = handler.names, params = {};
+        for (var i=0, l=states.length; i<l; i++) {
+          var state = states[i];
 
-            for (var j=0, m=names.length; j<m; j++) {
-              params[names[j]] = captures[currentCapture++];
-            }
-
-            result.push({ handler: handler.handler, params: params, isDynamic: !!names.length });
-          }
-
-          return result;
+          nextStates = nextStates.concat(state.match(ch));
         }
 
-        function addSegment(currentState, segment) {
-          segment.eachChar(function(ch) {
-            var state;
+        return nextStates;
+      }
 
-            currentState = currentState.put(ch);
-          });
-
-          return currentState;
-        }
-
-        function decodeQueryParamPart(part) {
-          // http://www.w3.org/TR/html401/interact/forms.html#h-17.13.4.1
-          part = part.replace(/\+/gm, '%20');
-          return decodeURIComponent(part);
-        }
-
-        // The main interface
-
-        var RouteRecognizer = function() {
-          this.rootState = new State();
-          this.names = {};
+      var oCreate = Object.create || function(proto) {
+          function F() {}
+          F.prototype = proto;
+          return new F();
         };
 
+      function RecognizeResults(queryParams) {
+        this.queryParams = queryParams || {};
+      }
+      RecognizeResults.prototype = oCreate({
+        splice: Array.prototype.splice,
+        slice:  Array.prototype.slice,
+        push:   Array.prototype.push,
+        length: 0,
+        queryParams: null
+      });
 
-        RouteRecognizer.prototype = {
-          add: function(routes, options) {
-            var currentState = this.rootState, regex = "^",
-                types = { statics: 0, dynamics: 0, stars: 0 },
-                handlers = [], allSegments = [], name;
+      function findHandler(state, path, queryParams) {
+        var handlers = state.handlers, regex = state.regex;
+        var captures = path.match(regex), currentCapture = 1;
+        var result = new RecognizeResults(queryParams);
 
-            var isEmpty = true;
+        for (var i=0, l=handlers.length; i<l; i++) {
+          var handler = handlers[i], names = handler.names, params = {};
 
-            for (var i=0, l=routes.length; i<l; i++) {
-              var route = routes[i], names = [];
+          for (var j=0, m=names.length; j<m; j++) {
+            params[names[j]] = captures[currentCapture++];
+          }
 
-              var segments = parse(route.path, names, types);
+          result.push({ handler: handler.handler, params: params, isDynamic: !!names.length });
+        }
 
-              allSegments = allSegments.concat(segments);
+        return result;
+      }
 
-              for (var j=0, m=segments.length; j<m; j++) {
-                var segment = segments[j];
+      function addSegment(currentState, segment) {
+        segment.eachChar(function(ch) {
+          var state;
 
-                if (segment instanceof EpsilonSegment) { continue; }
+          currentState = currentState.put(ch);
+        });
 
-                isEmpty = false;
+        return currentState;
+      }
 
-                // Add a "/" for the new segment
-                currentState = currentState.put({ validChars: "/" });
-                regex += "/";
+      function decodeQueryParamPart(part) {
+        // http://www.w3.org/TR/html401/interact/forms.html#h-17.13.4.1
+        part = part.replace(/\+/gm, '%20');
+        return decodeURIComponent(part);
+      }
 
-                // Add a representation of the segment to the NFA and regex
-                currentState = addSegment(currentState, segment);
-                regex += segment.regex();
-              }
+      // The main interface
 
-              var handler = { handler: route.handler, names: names };
-              handlers.push(handler);
-            }
+      var RouteRecognizer = function() {
+        this.rootState = new State();
+        this.names = {};
+      };
 
-            if (isEmpty) {
-              currentState = currentState.put({ validChars: "/" });
-              regex += "/";
-            }
 
-            currentState.handlers = handlers;
-            currentState.regex = new RegExp(regex + "$");
-            currentState.types = types;
+      RouteRecognizer.prototype = {
+        add: function(routes, options) {
+          var currentState = this.rootState, regex = "^",
+            types = { statics: 0, dynamics: 0, stars: 0 },
+            handlers = [], allSegments = [], name;
 
-            if (name = options && options.as) {
-              this.names[name] = {
-                segments: allSegments,
-                handlers: handlers
-              };
-            }
-          },
+          var isEmpty = true;
 
-          handlersFor: function(name) {
-            var route = this.names[name], result = [];
-            if (!route) { throw new Error("There is no route named " + name); }
+          for (var i=0, l=routes.length; i<l; i++) {
+            var route = routes[i], names = [];
 
-            for (var i=0, l=route.handlers.length; i<l; i++) {
-              result.push(route.handlers[i]);
-            }
+            var segments = parse(route.path, names, types);
 
-            return result;
-          },
+            allSegments = allSegments.concat(segments);
 
-          hasRoute: function(name) {
-            return !!this.names[name];
-          },
-
-          generate: function(name, params) {
-            var route = this.names[name], output = "";
-            if (!route) { throw new Error("There is no route named " + name); }
-
-            var segments = route.segments;
-
-            for (var i=0, l=segments.length; i<l; i++) {
-              var segment = segments[i];
+            for (var j=0, m=segments.length; j<m; j++) {
+              var segment = segments[j];
 
               if (segment instanceof EpsilonSegment) { continue; }
 
-              output += "/";
-              output += segment.generate(params);
+              isEmpty = false;
+
+              // Add a "/" for the new segment
+              currentState = currentState.put({ validChars: "/" });
+              regex += "/";
+
+              // Add a representation of the segment to the NFA and regex
+              currentState = addSegment(currentState, segment);
+              regex += segment.regex();
             }
 
-            if (output.charAt(0) !== '/') { output = '/' + output; }
-
-            if (params && params.queryParams) {
-              output += this.generateQueryString(params.queryParams, route.handlers);
-            }
-
-            return output;
-          },
-
-          generateQueryString: function(params, handlers) {
-            var pairs = [];
-            var keys = [];
-            for(var key in params) {
-              if (params.hasOwnProperty(key)) {
-                keys.push(key);
-              }
-            }
-            keys.sort();
-            for (var i = 0, len = keys.length; i < len; i++) {
-              key = keys[i];
-              var value = params[key];
-              if (value == null) {
-                continue;
-              }
-              var pair = encodeURIComponent(key);
-              if (isArray(value)) {
-                for (var j = 0, l = value.length; j < l; j++) {
-                  var arrayPair = key + '[]' + '=' + encodeURIComponent(value[j]);
-                  pairs.push(arrayPair);
-                }
-              } else {
-                pair += "=" + encodeURIComponent(value);
-                pairs.push(pair);
-              }
-            }
-
-            if (pairs.length === 0) { return ''; }
-
-            return "?" + pairs.join("&");
-          },
-
-          parseQueryString: function(queryString) {
-            var pairs = queryString.split("&"), queryParams = {};
-            for(var i=0; i < pairs.length; i++) {
-              var pair      = pairs[i].split('='),
-                  key       = decodeQueryParamPart(pair[0]),
-                  keyLength = key.length,
-                  isArray = false,
-                  value;
-              if (pair.length === 1) {
-                value = 'true';
-              } else {
-                //Handle arrays
-                if (keyLength > 2 && key.slice(keyLength -2) === '[]') {
-                  isArray = true;
-                  key = key.slice(0, keyLength - 2);
-                  if(!queryParams[key]) {
-                    queryParams[key] = [];
-                  }
-                }
-                value = pair[1] ? decodeQueryParamPart(pair[1]) : '';
-              }
-              if (isArray) {
-                queryParams[key].push(value);
-              } else {
-                queryParams[key] = value;
-              }
-            }
-            return queryParams;
-          },
-
-          recognize: function(path) {
-            var states = [ this.rootState ],
-                pathLen, i, l, queryStart, queryParams = {},
-                isSlashDropped = false;
-
-            queryStart = path.indexOf('?');
-            if (queryStart !== -1) {
-              var queryString = path.substr(queryStart + 1, path.length);
-              path = path.substr(0, queryStart);
-              queryParams = this.parseQueryString(queryString);
-            }
-
-            path = decodeURI(path);
-
-            // DEBUG GROUP path
-
-            if (path.charAt(0) !== "/") { path = "/" + path; }
-
-            pathLen = path.length;
-            if (pathLen > 1 && path.charAt(pathLen - 1) === "/") {
-              path = path.substr(0, pathLen - 1);
-              isSlashDropped = true;
-            }
-
-            for (i=0, l=path.length; i<l; i++) {
-              states = recognizeChar(states, path.charAt(i));
-              if (!states.length) { break; }
-            }
-
-            // END DEBUG GROUP
-
-            var solutions = [];
-            for (i=0, l=states.length; i<l; i++) {
-              if (states[i].handlers) { solutions.push(states[i]); }
-            }
-
-            states = sortSolutions(solutions);
-
-            var state = solutions[0];
-
-            if (state && state.handlers) {
-              // if a trailing slash was dropped and a star segment is the last segment
-              // specified, put the trailing slash back
-              if (isSlashDropped && state.regex.source.slice(-5) === "(.+)$") {
-                path = path + "/";
-              }
-              return findHandler(state, path, queryParams);
-            }
-          }
-        };
-
-        RouteRecognizer.prototype.map = map;
-
-        RouteRecognizer.VERSION = '0.1.5';
-
-        __exports__["default"] = RouteRecognizer;
-      });
-  enifed("route-recognizer/dsl",
-      ["exports"],
-      function(__exports__) {
-        "use strict";
-        function Target(path, matcher, delegate) {
-          this.path = path;
-          this.matcher = matcher;
-          this.delegate = delegate;
-        }
-
-        Target.prototype = {
-          to: function(target, callback) {
-            var delegate = this.delegate;
-
-            if (delegate && delegate.willAddRoute) {
-              target = delegate.willAddRoute(this.matcher.target, target);
-            }
-
-            this.matcher.add(this.path, target);
-
-            if (callback) {
-              if (callback.length === 0) { throw new Error("You must have an argument in the function passed to `to`"); }
-              this.matcher.addChild(this.path, target, callback, this.delegate);
-            }
-            return this;
-          }
-        };
-
-        function Matcher(target) {
-          this.routes = {};
-          this.children = {};
-          this.target = target;
-        }
-
-        Matcher.prototype = {
-          add: function(path, handler) {
-            this.routes[path] = handler;
-          },
-
-          addChild: function(path, target, callback, delegate) {
-            var matcher = new Matcher(target);
-            this.children[path] = matcher;
-
-            var match = generateMatch(path, matcher, delegate);
-
-            if (delegate && delegate.contextEntered) {
-              delegate.contextEntered(target, match);
-            }
-
-            callback(match);
-          }
-        };
-
-        function generateMatch(startingPath, matcher, delegate) {
-          return function(path, nestedCallback) {
-            var fullPath = startingPath + path;
-
-            if (nestedCallback) {
-              nestedCallback(generateMatch(fullPath, matcher, delegate));
-            } else {
-              return new Target(startingPath + path, matcher, delegate);
-            }
-          };
-        }
-
-        function addRoute(routeArray, path, handler) {
-          var len = 0;
-          for (var i=0, l=routeArray.length; i<l; i++) {
-            len += routeArray[i].path.length;
+            var handler = { handler: route.handler, names: names };
+            handlers.push(handler);
           }
 
-          path = path.substr(len);
-          var route = { path: path, handler: handler };
-          routeArray.push(route);
-        }
-
-        function eachRoute(baseRoute, matcher, callback, binding) {
-          var routes = matcher.routes;
-
-          for (var path in routes) {
-            if (routes.hasOwnProperty(path)) {
-              var routeArray = baseRoute.slice();
-              addRoute(routeArray, path, routes[path]);
-
-              if (matcher.children[path]) {
-                eachRoute(routeArray, matcher.children[path], callback, binding);
-              } else {
-                callback.call(binding, routeArray);
-              }
-            }
-          }
-        }
-
-        __exports__["default"] = function(callback, addRouteCallback) {
-          var matcher = new Matcher();
-
-          callback(generateMatch("", matcher, this.delegate));
-
-          eachRoute([], matcher, function(route) {
-            if (addRouteCallback) { addRouteCallback(this, route); }
-            else { this.add(route); }
-          }, this);
-        }
-      });
-  enifed("router",
-      ["./router/router","exports"],
-      function(__dependency1__, __exports__) {
-        "use strict";
-        var Router = __dependency1__["default"];
-
-        __exports__["default"] = Router;
-      });
-  enifed("router/handler-info",
-      ["./utils","rsvp/promise","exports"],
-      function(__dependency1__, __dependency2__, __exports__) {
-        "use strict";
-        var bind = __dependency1__.bind;
-        var merge = __dependency1__.merge;
-        var serialize = __dependency1__.serialize;
-        var promiseLabel = __dependency1__.promiseLabel;
-        var applyHook = __dependency1__.applyHook;
-        var Promise = __dependency2__["default"];
-
-        function HandlerInfo(_props) {
-          var props = _props || {};
-          merge(this, props);
-          this.initialize(props);
-        }
-
-        HandlerInfo.prototype = {
-          name: null,
-          handler: null,
-          params: null,
-          context: null,
-
-          // Injected by the handler info factory.
-          factory: null,
-
-          initialize: function() {},
-
-          log: function(payload, message) {
-            if (payload.log) {
-              payload.log(this.name + ': ' + message);
-            }
-          },
-
-          promiseLabel: function(label) {
-            return promiseLabel("'" + this.name + "' " + label);
-          },
-
-          getUnresolved: function() {
-            return this;
-          },
-
-          serialize: function() {
-            return this.params || {};
-          },
-
-          resolve: function(shouldContinue, payload) {
-            var checkForAbort  = bind(this, this.checkForAbort,      shouldContinue),
-                beforeModel    = bind(this, this.runBeforeModelHook, payload),
-                model          = bind(this, this.getModel,           payload),
-                afterModel     = bind(this, this.runAfterModelHook,  payload),
-                becomeResolved = bind(this, this.becomeResolved,     payload);
-
-            return Promise.resolve(undefined, this.promiseLabel("Start handler"))
-                .then(checkForAbort, null, this.promiseLabel("Check for abort"))
-                .then(beforeModel, null, this.promiseLabel("Before model"))
-                .then(checkForAbort, null, this.promiseLabel("Check if aborted during 'beforeModel' hook"))
-                .then(model, null, this.promiseLabel("Model"))
-                .then(checkForAbort, null, this.promiseLabel("Check if aborted in 'model' hook"))
-                .then(afterModel, null, this.promiseLabel("After model"))
-                .then(checkForAbort, null, this.promiseLabel("Check if aborted in 'afterModel' hook"))
-                .then(becomeResolved, null, this.promiseLabel("Become resolved"));
-          },
-
-          runBeforeModelHook: function(payload) {
-            if (payload.trigger) {
-              payload.trigger(true, 'willResolveModel', payload, this.handler);
-            }
-            return this.runSharedModelHook(payload, 'beforeModel', []);
-          },
-
-          runAfterModelHook: function(payload, resolvedModel) {
-            // Stash the resolved model on the payload.
-            // This makes it possible for users to swap out
-            // the resolved model in afterModel.
-            var name = this.name;
-            this.stashResolvedModel(payload, resolvedModel);
-
-            return this.runSharedModelHook(payload, 'afterModel', [resolvedModel])
-                .then(function() {
-                  // Ignore the fulfilled value returned from afterModel.
-                  // Return the value stashed in resolvedModels, which
-                  // might have been swapped out in afterModel.
-                  return payload.resolvedModels[name];
-                }, null, this.promiseLabel("Ignore fulfillment value and return model value"));
-          },
-
-          runSharedModelHook: function(payload, hookName, args) {
-            this.log(payload, "calling " + hookName + " hook");
-
-            if (this.queryParams) {
-              args.push(this.queryParams);
-            }
-            args.push(payload);
-
-            var result = applyHook(this.handler, hookName, args);
-
-            if (result && result.isTransition) {
-              result = null;
-            }
-
-            return Promise.resolve(result, this.promiseLabel("Resolve value returned from one of the model hooks"));
-          },
-
-          // overridden by subclasses
-          getModel: null,
-
-          checkForAbort: function(shouldContinue, promiseValue) {
-            return Promise.resolve(shouldContinue(), this.promiseLabel("Check for abort")).then(function() {
-              // We don't care about shouldContinue's resolve value;
-              // pass along the original value passed to this fn.
-              return promiseValue;
-            }, null, this.promiseLabel("Ignore fulfillment value and continue"));
-          },
-
-          stashResolvedModel: function(payload, resolvedModel) {
-            payload.resolvedModels = payload.resolvedModels || {};
-            payload.resolvedModels[this.name] = resolvedModel;
-          },
-
-          becomeResolved: function(payload, resolvedContext) {
-            var params = this.serialize(resolvedContext);
-
-            if (payload) {
-              this.stashResolvedModel(payload, resolvedContext);
-              payload.params = payload.params || {};
-              payload.params[this.name] = params;
-            }
-
-            return this.factory('resolved', {
-              context: resolvedContext,
-              name: this.name,
-              handler: this.handler,
-              params: params
-            });
-          },
-
-          shouldSupercede: function(other) {
-            // Prefer this newer handlerInfo over `other` if:
-            // 1) The other one doesn't exist
-            // 2) The names don't match
-            // 3) This handler has a context that doesn't match
-            //    the other one (or the other one doesn't have one).
-            // 4) This handler has parameters that don't match the other.
-            if (!other) { return true; }
-
-            var contextsMatch = (other.context === this.context);
-            return other.name !== this.name ||
-                (this.hasOwnProperty('context') && !contextsMatch) ||
-                (this.hasOwnProperty('params') && !paramsMatch(this.params, other.params));
-          }
-        };
-
-        function paramsMatch(a, b) {
-          if ((!a) ^ (!b)) {
-            // Only one is null.
-            return false;
+          if (isEmpty) {
+            currentState = currentState.put({ validChars: "/" });
+            regex += "/";
           }
 
-          if (!a) {
-            // Both must be null.
-            return true;
-          }
-
-          // Note: this assumes that both params have the same
-          // number of keys, but since we're comparing the
-          // same handlers, they should.
-          for (var k in a) {
-            if (a.hasOwnProperty(k) && a[k] !== b[k]) {
-              return false;
-            }
-          }
-          return true;
-        }
-
-        __exports__["default"] = HandlerInfo;
-      });
-  enifed("router/handler-info/factory",
-      ["router/handler-info/resolved-handler-info","router/handler-info/unresolved-handler-info-by-object","router/handler-info/unresolved-handler-info-by-param","exports"],
-      function(__dependency1__, __dependency2__, __dependency3__, __exports__) {
-        "use strict";
-        var ResolvedHandlerInfo = __dependency1__["default"];
-        var UnresolvedHandlerInfoByObject = __dependency2__["default"];
-        var UnresolvedHandlerInfoByParam = __dependency3__["default"];
-
-        handlerInfoFactory.klasses = {
-          resolved: ResolvedHandlerInfo,
-          param: UnresolvedHandlerInfoByParam,
-          object: UnresolvedHandlerInfoByObject
-        };
-
-        function handlerInfoFactory(name, props) {
-          var Ctor = handlerInfoFactory.klasses[name],
-              handlerInfo = new Ctor(props || {});
-          handlerInfo.factory = handlerInfoFactory;
-          return handlerInfo;
-        }
-
-        __exports__["default"] = handlerInfoFactory;
-      });
-  enifed("router/handler-info/resolved-handler-info",
-      ["../handler-info","router/utils","rsvp/promise","exports"],
-      function(__dependency1__, __dependency2__, __dependency3__, __exports__) {
-        "use strict";
-        var HandlerInfo = __dependency1__["default"];
-        var subclass = __dependency2__.subclass;
-        var promiseLabel = __dependency2__.promiseLabel;
-        var Promise = __dependency3__["default"];
-
-        var ResolvedHandlerInfo = subclass(HandlerInfo, {
-          resolve: function(shouldContinue, payload) {
-            // A ResolvedHandlerInfo just resolved with itself.
-            if (payload && payload.resolvedModels) {
-              payload.resolvedModels[this.name] = this.context;
-            }
-            return Promise.resolve(this, this.promiseLabel("Resolve"));
-          },
-
-          getUnresolved: function() {
-            return this.factory('param', {
-              name: this.name,
-              handler: this.handler,
-              params: this.params
-            });
-          },
-
-          isResolved: true
-        });
-
-        __exports__["default"] = ResolvedHandlerInfo;
-      });
-  enifed("router/handler-info/unresolved-handler-info-by-object",
-      ["../handler-info","router/utils","rsvp/promise","exports"],
-      function(__dependency1__, __dependency2__, __dependency3__, __exports__) {
-        "use strict";
-        var HandlerInfo = __dependency1__["default"];
-        var merge = __dependency2__.merge;
-        var subclass = __dependency2__.subclass;
-        var promiseLabel = __dependency2__.promiseLabel;
-        var isParam = __dependency2__.isParam;
-        var Promise = __dependency3__["default"];
-
-        var UnresolvedHandlerInfoByObject = subclass(HandlerInfo, {
-          getModel: function(payload) {
-            this.log(payload, this.name + ": resolving provided model");
-            return Promise.resolve(this.context);
-          },
-
-          initialize: function(props) {
-            this.names = props.names || [];
-            this.context = props.context;
-          },
-
-          /**
-           @private
-
-           Serializes a handler using its custom `serialize` method or
-           by a default that looks up the expected property name from
-           the dynamic segment.
-
-           @param {Object} model the model to be serialized for this handler
-           */
-          serialize: function(_model) {
-            var model = _model || this.context,
-                names = this.names,
-                handler = this.handler;
-
-            var object = {};
-            if (isParam(model)) {
-              object[names[0]] = model;
-              return object;
-            }
-
-            // Use custom serialize if it exists.
-            if (handler.serialize) {
-              return handler.serialize(model, names);
-            }
-
-            if (names.length !== 1) { return; }
-
-            var name = names[0];
-
-            if (/_id$/.test(name)) {
-              object[name] = model.id;
-            } else {
-              object[name] = model;
-            }
-            return object;
-          }
-        });
-
-        __exports__["default"] = UnresolvedHandlerInfoByObject;
-      });
-  enifed("router/handler-info/unresolved-handler-info-by-param",
-      ["../handler-info","router/utils","exports"],
-      function(__dependency1__, __dependency2__, __exports__) {
-        "use strict";
-        var HandlerInfo = __dependency1__["default"];
-        var resolveHook = __dependency2__.resolveHook;
-        var merge = __dependency2__.merge;
-        var subclass = __dependency2__.subclass;
-        var promiseLabel = __dependency2__.promiseLabel;
-
-        // Generated by URL transitions and non-dynamic route segments in named Transitions.
-        var UnresolvedHandlerInfoByParam = subclass (HandlerInfo, {
-          initialize: function(props) {
-            this.params = props.params || {};
-          },
-
-          getModel: function(payload) {
-            var fullParams = this.params;
-            if (payload && payload.queryParams) {
-              fullParams = {};
-              merge(fullParams, this.params);
-              fullParams.queryParams = payload.queryParams;
-            }
-
-            var handler = this.handler;
-            var hookName = resolveHook(handler, 'deserialize') ||
-                resolveHook(handler, 'model');
-
-            return this.runSharedModelHook(payload, hookName, [fullParams]);
-          }
-        });
-
-        __exports__["default"] = UnresolvedHandlerInfoByParam;
-      });
-  enifed("router/router",
-      ["route-recognizer","rsvp/promise","./utils","./transition-state","./transition","./transition-intent/named-transition-intent","./transition-intent/url-transition-intent","./handler-info","exports"],
-      function(__dependency1__, __dependency2__, __dependency3__, __dependency4__, __dependency5__, __dependency6__, __dependency7__, __dependency8__, __exports__) {
-        "use strict";
-        var RouteRecognizer = __dependency1__["default"];
-        var Promise = __dependency2__["default"];
-        var trigger = __dependency3__.trigger;
-        var log = __dependency3__.log;
-        var slice = __dependency3__.slice;
-        var forEach = __dependency3__.forEach;
-        var merge = __dependency3__.merge;
-        var serialize = __dependency3__.serialize;
-        var extractQueryParams = __dependency3__.extractQueryParams;
-        var getChangelist = __dependency3__.getChangelist;
-        var promiseLabel = __dependency3__.promiseLabel;
-        var callHook = __dependency3__.callHook;
-        var TransitionState = __dependency4__["default"];
-        var logAbort = __dependency5__.logAbort;
-        var Transition = __dependency5__.Transition;
-        var TransitionAborted = __dependency5__.TransitionAborted;
-        var NamedTransitionIntent = __dependency6__["default"];
-        var URLTransitionIntent = __dependency7__["default"];
-        var ResolvedHandlerInfo = __dependency8__.ResolvedHandlerInfo;
-
-        var pop = Array.prototype.pop;
-
-        function Router(_options) {
-          var options = _options || {};
-          this.getHandler = options.getHandler || this.getHandler;
-          this.updateURL = options.updateURL || this.updateURL;
-          this.replaceURL = options.replaceURL || this.replaceURL;
-          this.didTransition = options.didTransition || this.didTransition;
-          this.willTransition = options.willTransition || this.willTransition;
-          this.delegate = options.delegate || this.delegate;
-          this.triggerEvent = options.triggerEvent || this.triggerEvent;
-          this.log = options.log || this.log;
-
-          this.recognizer = new RouteRecognizer();
-          this.reset();
-        }
-
-        function getTransitionByIntent(intent, isIntermediate) {
-          var wasTransitioning = !!this.activeTransition;
-          var oldState = wasTransitioning ? this.activeTransition.state : this.state;
-          var newTransition;
-
-          var newState = intent.applyToState(oldState, this.recognizer, this.getHandler, isIntermediate);
-          var queryParamChangelist = getChangelist(oldState.queryParams, newState.queryParams);
-
-          if (handlerInfosEqual(newState.handlerInfos, oldState.handlerInfos)) {
-
-            // This is a no-op transition. See if query params changed.
-            if (queryParamChangelist) {
-              newTransition = this.queryParamsTransition(queryParamChangelist, wasTransitioning, oldState, newState);
-              if (newTransition) {
-                return newTransition;
-              }
-            }
-
-            // No-op. No need to create a new transition.
-            return this.activeTransition || new Transition(this);
-          }
-
-          if (isIntermediate) {
-            setupContexts(this, newState);
-            return;
-          }
-
-          // Create a new transition to the destination route.
-          newTransition = new Transition(this, intent, newState);
-
-          // Abort and usurp any previously active transition.
-          if (this.activeTransition) {
-            this.activeTransition.abort();
-          }
-          this.activeTransition = newTransition;
-
-          // Transition promises by default resolve with resolved state.
-          // For our purposes, swap out the promise to resolve
-          // after the transition has been finalized.
-          newTransition.promise = newTransition.promise.then(function(result) {
-            return finalizeTransition(newTransition, result.state);
-          }, null, promiseLabel("Settle transition promise when transition is finalized"));
-
-          if (!wasTransitioning) {
-            notifyExistingHandlers(this, newState, newTransition);
-          }
-
-          fireQueryParamDidChange(this, newState, queryParamChangelist);
-
-          return newTransition;
-        }
-
-        Router.prototype = {
-
-          /**
-           The main entry point into the router. The API is essentially
-           the same as the `map` method in `route-recognizer`.
-
-           This method extracts the String handler at the last `.to()`
-           call and uses it as the name of the whole route.
-
-           @param {Function} callback
-           */
-          map: function(callback) {
-            this.recognizer.delegate = this.delegate;
-
-            this.recognizer.map(callback, function(recognizer, routes) {
-              for (var i = routes.length - 1, proceed = true; i >= 0 && proceed; --i) {
-                var route = routes[i];
-                recognizer.add(routes, { as: route.handler });
-                proceed = route.path === '/' || route.path === '' || route.handler.slice(-6) === '.index';
-              }
-            });
-          },
-
-          hasRoute: function(route) {
-            return this.recognizer.hasRoute(route);
-          },
-
-          getHandler: function() {},
-
-          queryParamsTransition: function(changelist, wasTransitioning, oldState, newState) {
-            var router = this;
-
-            fireQueryParamDidChange(this, newState, changelist);
-
-            if (!wasTransitioning && this.activeTransition) {
-              // One of the handlers in queryParamsDidChange
-              // caused a transition. Just return that transition.
-              return this.activeTransition;
-            } else {
-              // Running queryParamsDidChange didn't change anything.
-              // Just update query params and be on our way.
-
-              // We have to return a noop transition that will
-              // perform a URL update at the end. This gives
-              // the user the ability to set the url update
-              // method (default is replaceState).
-              var newTransition = new Transition(this);
-              newTransition.queryParamsOnly = true;
-
-              oldState.queryParams = finalizeQueryParamChange(this, newState.handlerInfos, newState.queryParams, newTransition);
-
-              newTransition.promise = newTransition.promise.then(function(result) {
-                updateURL(newTransition, oldState, true);
-                if (router.didTransition) {
-                  router.didTransition(router.currentHandlerInfos);
-                }
-                return result;
-              }, null, promiseLabel("Transition complete"));
-              return newTransition;
-            }
-          },
-
-          // NOTE: this doesn't really belong here, but here
-          // it shall remain until our ES6 transpiler can
-          // handle cyclical deps.
-          transitionByIntent: function(intent, isIntermediate) {
-            try {
-              return getTransitionByIntent.apply(this, arguments);
-            } catch(e) {
-              return new Transition(this, intent, null, e);
-            }
-          },
-
-          /**
-           Clears the current and target route handlers and triggers exit
-           on each of them starting at the leaf and traversing up through
-           its ancestors.
-           */
-          reset: function() {
-            if (this.state) {
-              forEach(this.state.handlerInfos.slice().reverse(), function(handlerInfo) {
-                var handler = handlerInfo.handler;
-                callHook(handler, 'exit');
-              });
-            }
-
-            this.state = new TransitionState();
-            this.currentHandlerInfos = null;
-          },
-
-          activeTransition: null,
-
-          /**
-           var handler = handlerInfo.handler;
-           The entry point for handling a change to the URL (usually
-           via the back and forward button).
-
-           Returns an Array of handlers and the parameters associated
-           with those parameters.
-
-           @param {String} url a URL to process
-
-           @return {Array} an Array of `[handler, parameter]` tuples
-           */
-          handleURL: function(url) {
-            // Perform a URL-based transition, but don't change
-            // the URL afterward, since it already happened.
-            var args = slice.call(arguments);
-            if (url.charAt(0) !== '/') { args[0] = '/' + url; }
-
-            return doTransition(this, args).method(null);
-          },
-
-          /**
-           Hook point for updating the URL.
-
-           @param {String} url a URL to update to
-           */
-          updateURL: function() {
-            throw new Error("updateURL is not implemented");
-          },
-
-          /**
-           Hook point for replacing the current URL, i.e. with replaceState
-
-           By default this behaves the same as `updateURL`
-
-           @param {String} url a URL to update to
-           */
-          replaceURL: function(url) {
-            this.updateURL(url);
-          },
-
-          /**
-           Transition into the specified named route.
-
-           If necessary, trigger the exit callback on any handlers
-           that are no longer represented by the target route.
-
-           @param {String} name the name of the route
-           */
-          transitionTo: function(name) {
-            return doTransition(this, arguments);
-          },
-
-          intermediateTransitionTo: function(name) {
-            return doTransition(this, arguments, true);
-          },
-
-          refresh: function(pivotHandler) {
-            var state = this.activeTransition ? this.activeTransition.state : this.state;
-            var handlerInfos = state.handlerInfos;
-            var params = {};
-            for (var i = 0, len = handlerInfos.length; i < len; ++i) {
-              var handlerInfo = handlerInfos[i];
-              params[handlerInfo.name] = handlerInfo.params || {};
-            }
-
-            log(this, "Starting a refresh transition");
-            var intent = new NamedTransitionIntent({
-              name: handlerInfos[handlerInfos.length - 1].name,
-              pivotHandler: pivotHandler || handlerInfos[0].handler,
-              contexts: [], // TODO collect contexts...?
-              queryParams: this._changedQueryParams || state.queryParams || {}
-            });
-
-            return this.transitionByIntent(intent, false);
-          },
-
-          /**
-           Identical to `transitionTo` except that the current URL will be replaced
-           if possible.
-
-           This method is intended primarily for use with `replaceState`.
-
-           @param {String} name the name of the route
-           */
-          replaceWith: function(name) {
-            return doTransition(this, arguments).method('replace');
-          },
-
-          /**
-           Take a named route and context objects and generate a
-           URL.
-
-           @param {String} name the name of the route to generate
-           a URL for
-           @param {...Object} objects a list of objects to serialize
-
-           @return {String} a URL
-           */
-          generate: function(handlerName) {
-
-            var partitionedArgs = extractQueryParams(slice.call(arguments, 1)),
-                suppliedParams = partitionedArgs[0],
-                queryParams = partitionedArgs[1];
-
-            // Construct a TransitionIntent with the provided params
-            // and apply it to the present state of the router.
-            var intent = new NamedTransitionIntent({ name: handlerName, contexts: suppliedParams });
-            var state = intent.applyToState(this.state, this.recognizer, this.getHandler);
-            var params = {};
-
-            for (var i = 0, len = state.handlerInfos.length; i < len; ++i) {
-              var handlerInfo = state.handlerInfos[i];
-              var handlerParams = handlerInfo.serialize();
-              merge(params, handlerParams);
-            }
-            params.queryParams = queryParams;
-
-            return this.recognizer.generate(handlerName, params);
-          },
-
-          applyIntent: function(handlerName, contexts) {
-            var intent = new NamedTransitionIntent({
-              name: handlerName,
-              contexts: contexts
-            });
-
-            var state = this.activeTransition && this.activeTransition.state || this.state;
-            return intent.applyToState(state, this.recognizer, this.getHandler);
-          },
-
-          isActiveIntent: function(handlerName, contexts, queryParams, _state) {
-            var state = _state || this.state,
-                targetHandlerInfos = state.handlerInfos,
-                found = false, names, object, handlerInfo, handlerObj, i, len;
-
-            if (!targetHandlerInfos.length) { return false; }
-
-            var targetHandler = targetHandlerInfos[targetHandlerInfos.length - 1].name;
-            var recogHandlers = this.recognizer.handlersFor(targetHandler);
-
-            var index = 0;
-            for (len = recogHandlers.length; index < len; ++index) {
-              handlerInfo = targetHandlerInfos[index];
-              if (handlerInfo.name === handlerName) { break; }
-            }
-
-            if (index === recogHandlers.length) {
-              // The provided route name isn't even in the route hierarchy.
-              return false;
-            }
-
-            var testState = new TransitionState();
-            testState.handlerInfos = targetHandlerInfos.slice(0, index + 1);
-            recogHandlers = recogHandlers.slice(0, index + 1);
-
-            var intent = new NamedTransitionIntent({
-              name: targetHandler,
-              contexts: contexts
-            });
-
-            var newState = intent.applyToHandlers(testState, recogHandlers, this.getHandler, targetHandler, true, true);
-
-            var handlersEqual = handlerInfosEqual(newState.handlerInfos, testState.handlerInfos);
-            if (!queryParams || !handlersEqual) {
-              return handlersEqual;
-            }
-
-            // Get a hash of QPs that will still be active on new route
-            var activeQPsOnNewHandler = {};
-            merge(activeQPsOnNewHandler, queryParams);
-
-            var activeQueryParams  = state.queryParams;
-            for (var key in activeQueryParams) {
-              if (activeQueryParams.hasOwnProperty(key) &&
-                  activeQPsOnNewHandler.hasOwnProperty(key)) {
-                activeQPsOnNewHandler[key] = activeQueryParams[key];
-              }
-            }
-
-            return handlersEqual && !getChangelist(activeQPsOnNewHandler, queryParams);
-          },
-
-          isActive: function(handlerName) {
-            var partitionedArgs = extractQueryParams(slice.call(arguments, 1));
-            return this.isActiveIntent(handlerName, partitionedArgs[0], partitionedArgs[1]);
-          },
-
-          trigger: function(name) {
-            var args = slice.call(arguments);
-            trigger(this, this.currentHandlerInfos, false, args);
-          },
-
-          /**
-           Hook point for logging transition status updates.
-
-           @param {String} message The message to log.
-           */
-          log: null
-        };
-
-        /**
-         @private
-
-         Fires queryParamsDidChange event
-         */
-        function fireQueryParamDidChange(router, newState, queryParamChangelist) {
-          // If queryParams changed trigger event
-          if (queryParamChangelist) {
-
-            // This is a little hacky but we need some way of storing
-            // changed query params given that no activeTransition
-            // is guaranteed to have occurred.
-            router._changedQueryParams = queryParamChangelist.all;
-            trigger(router, newState.handlerInfos, true, ['queryParamsDidChange', queryParamChangelist.changed, queryParamChangelist.all, queryParamChangelist.removed]);
-            router._changedQueryParams = null;
-          }
-        }
-
-        /**
-         @private
-
-         Takes an Array of `HandlerInfo`s, figures out which ones are
-         exiting, entering, or changing contexts, and calls the
-         proper handler hooks.
-
-         For example, consider the following tree of handlers. Each handler is
-         followed by the URL segment it handles.
-
-         ```
-         |~index ("/")
-         | |~posts ("/posts")
-         | | |-showPost ("/:id")
-         | | |-newPost ("/new")
-         | | |-editPost ("/edit")
-         | |~about ("/about/:id")
-         ```
-
-         Consider the following transitions:
-
-         1. A URL transition to `/posts/1`.
-         1. Triggers the `*model` callbacks on the
-         `index`, `posts`, and `showPost` handlers
-         2. Triggers the `enter` callback on the same
-         3. Triggers the `setup` callback on the same
-         2. A direct transition to `newPost`
-         1. Triggers the `exit` callback on `showPost`
-         2. Triggers the `enter` callback on `newPost`
-         3. Triggers the `setup` callback on `newPost`
-         3. A direct transition to `about` with a specified
-         context object
-         1. Triggers the `exit` callback on `newPost`
-         and `posts`
-         2. Triggers the `serialize` callback on `about`
-         3. Triggers the `enter` callback on `about`
-         4. Triggers the `setup` callback on `about`
-
-         @param {Router} transition
-         @param {TransitionState} newState
-         */
-        function setupContexts(router, newState, transition) {
-          var partition = partitionHandlers(router.state, newState);
-          var i, l, handler;
-
-          for (i=0, l=partition.exited.length; i<l; i++) {
-            handler = partition.exited[i].handler;
-            delete handler.context;
-
-            callHook(handler, 'reset', true, transition);
-            callHook(handler, 'exit', transition);
-          }
-
-          var oldState = router.oldState = router.state;
-          router.state = newState;
-          var currentHandlerInfos = router.currentHandlerInfos = partition.unchanged.slice();
-
-          try {
-            for (i=0, l=partition.reset.length; i<l; i++) {
-              handler = partition.reset[i].handler;
-              callHook(handler, 'reset', false, transition);
-            }
-
-            for (i=0, l=partition.updatedContext.length; i<l; i++) {
-              handlerEnteredOrUpdated(currentHandlerInfos, partition.updatedContext[i], false, transition);
-            }
-
-            for (i=0, l=partition.entered.length; i<l; i++) {
-              handlerEnteredOrUpdated(currentHandlerInfos, partition.entered[i], true, transition);
-            }
-          } catch(e) {
-            router.state = oldState;
-            router.currentHandlerInfos = oldState.handlerInfos;
-            throw e;
-          }
-
-          router.state.queryParams = finalizeQueryParamChange(router, currentHandlerInfos, newState.queryParams, transition);
-        }
-
-
-        /**
-         @private
-
-         Helper method used by setupContexts. Handles errors or redirects
-         that may happen in enter/setup.
-         */
-        function handlerEnteredOrUpdated(currentHandlerInfos, handlerInfo, enter, transition) {
-
-          var handler = handlerInfo.handler,
-              context = handlerInfo.context;
-
-          if (enter) {
-            callHook(handler, 'enter', transition);
-          }
-          if (transition && transition.isAborted) {
-            throw new TransitionAborted();
-          }
-
-          handler.context = context;
-          callHook(handler, 'contextDidChange');
-
-          callHook(handler, 'setup', context, transition);
-          if (transition && transition.isAborted) {
-            throw new TransitionAborted();
-          }
-
-          currentHandlerInfos.push(handlerInfo);
-
-          return true;
-        }
-
-
-        /**
-         @private
-
-         This function is called when transitioning from one URL to
-         another to determine which handlers are no longer active,
-         which handlers are newly active, and which handlers remain
-         active but have their context changed.
-
-         Take a list of old handlers and new handlers and partition
-         them into four buckets:
-
-         * unchanged: the handler was active in both the old and
-         new URL, and its context remains the same
-         * updated context: the handler was active in both the
-         old and new URL, but its context changed. The handler's
-         `setup` method, if any, will be called with the new
-         context.
-         * exited: the handler was active in the old URL, but is
-         no longer active.
-         * entered: the handler was not active in the old URL, but
-         is now active.
-
-         The PartitionedHandlers structure has four fields:
-
-         * `updatedContext`: a list of `HandlerInfo` objects that
-         represent handlers that remain active but have a changed
-         context
-         * `entered`: a list of `HandlerInfo` objects that represent
-         handlers that are newly active
-         * `exited`: a list of `HandlerInfo` objects that are no
-         longer active.
-         * `unchanged`: a list of `HanderInfo` objects that remain active.
-
-         @param {Array[HandlerInfo]} oldHandlers a list of the handler
-         information for the previous URL (or `[]` if this is the
-         first handled transition)
-         @param {Array[HandlerInfo]} newHandlers a list of the handler
-         information for the new URL
-
-         @return {Partition}
-         */
-        function partitionHandlers(oldState, newState) {
-          var oldHandlers = oldState.handlerInfos;
-          var newHandlers = newState.handlerInfos;
-
-          var handlers = {
-            updatedContext: [],
-            exited: [],
-            entered: [],
-            unchanged: []
-          };
-
-          var handlerChanged, contextChanged = false, i, l;
-
-          for (i=0, l=newHandlers.length; i<l; i++) {
-            var oldHandler = oldHandlers[i], newHandler = newHandlers[i];
-
-            if (!oldHandler || oldHandler.handler !== newHandler.handler) {
-              handlerChanged = true;
-            }
-
-            if (handlerChanged) {
-              handlers.entered.push(newHandler);
-              if (oldHandler) { handlers.exited.unshift(oldHandler); }
-            } else if (contextChanged || oldHandler.context !== newHandler.context) {
-              contextChanged = true;
-              handlers.updatedContext.push(newHandler);
-            } else {
-              handlers.unchanged.push(oldHandler);
-            }
-          }
-
-          for (i=newHandlers.length, l=oldHandlers.length; i<l; i++) {
-            handlers.exited.unshift(oldHandlers[i]);
-          }
-
-          handlers.reset = handlers.updatedContext.slice();
-          handlers.reset.reverse();
-
-          return handlers;
-        }
-
-        function updateURL(transition, state, inputUrl) {
-          var urlMethod = transition.urlMethod;
-
-          if (!urlMethod) {
-            return;
-          }
-
-          var router = transition.router,
-              handlerInfos = state.handlerInfos,
-              handlerName = handlerInfos[handlerInfos.length - 1].name,
-              params = {};
-
-          for (var i = handlerInfos.length - 1; i >= 0; --i) {
-            var handlerInfo = handlerInfos[i];
-            merge(params, handlerInfo.params);
-            if (handlerInfo.handler.inaccessibleByURL) {
-              urlMethod = null;
-            }
-          }
-
-          if (urlMethod) {
-            params.queryParams = transition._visibleQueryParams || state.queryParams;
-            var url = router.recognizer.generate(handlerName, params);
-
-            if (urlMethod === 'replace') {
-              router.replaceURL(url);
-            } else {
-              router.updateURL(url);
-            }
-          }
-        }
-
-        /**
-         @private
-
-         Updates the URL (if necessary) and calls `setupContexts`
-         to update the router's array of `currentHandlerInfos`.
-         */
-        function finalizeTransition(transition, newState) {
-
-          try {
-            log(transition.router, transition.sequence, "Resolved all models on destination route; finalizing transition.");
-
-            var router = transition.router,
-                handlerInfos = newState.handlerInfos,
-                seq = transition.sequence;
-
-            // Run all the necessary enter/setup/exit hooks
-            setupContexts(router, newState, transition);
-
-            // Check if a redirect occurred in enter/setup
-            if (transition.isAborted) {
-              // TODO: cleaner way? distinguish b/w targetHandlerInfos?
-              router.state.handlerInfos = router.currentHandlerInfos;
-              return Promise.reject(logAbort(transition));
-            }
-
-            updateURL(transition, newState, transition.intent.url);
-
-            transition.isActive = false;
-            router.activeTransition = null;
-
-            trigger(router, router.currentHandlerInfos, true, ['didTransition']);
-
-            if (router.didTransition) {
-              router.didTransition(router.currentHandlerInfos);
-            }
-
-            log(router, transition.sequence, "TRANSITION COMPLETE.");
-
-            // Resolve with the final handler.
-            return handlerInfos[handlerInfos.length - 1].handler;
-          } catch(e) {
-            if (!((e instanceof TransitionAborted))) {
-              //var erroneousHandler = handlerInfos.pop();
-              var infos = transition.state.handlerInfos;
-              transition.trigger(true, 'error', e, transition, infos[infos.length-1].handler);
-              transition.abort();
-            }
-
-            throw e;
-          }
-        }
-
-        /**
-         @private
-
-         Begins and returns a Transition based on the provided
-         arguments. Accepts arguments in the form of both URL
-         transitions and named transitions.
-
-         @param {Router} router
-         @param {Array[Object]} args arguments passed to transitionTo,
-         replaceWith, or handleURL
-         */
-        function doTransition(router, args, isIntermediate) {
-          // Normalize blank transitions to root URL transitions.
-          var name = args[0] || '/';
-
-          var lastArg = args[args.length-1];
-          var queryParams = {};
-          if (lastArg && lastArg.hasOwnProperty('queryParams')) {
-            queryParams = pop.call(args).queryParams;
-          }
-
-          var intent;
-          if (args.length === 0) {
-
-            log(router, "Updating query params");
-
-            // A query param update is really just a transition
-            // into the route you're already on.
-            var handlerInfos = router.state.handlerInfos;
-            intent = new NamedTransitionIntent({
-              name: handlerInfos[handlerInfos.length - 1].name,
-              contexts: [],
-              queryParams: queryParams
-            });
-
-          } else if (name.charAt(0) === '/') {
-
-            log(router, "Attempting URL transition to " + name);
-            intent = new URLTransitionIntent({ url: name });
-
-          } else {
-
-            log(router, "Attempting transition to " + name);
-            intent = new NamedTransitionIntent({
-              name: args[0],
-              contexts: slice.call(args, 1),
-              queryParams: queryParams
-            });
-          }
-
-          return router.transitionByIntent(intent, isIntermediate);
-        }
-
-        function handlerInfosEqual(handlerInfos, otherHandlerInfos) {
-          if (handlerInfos.length !== otherHandlerInfos.length) {
-            return false;
-          }
-
-          for (var i = 0, len = handlerInfos.length; i < len; ++i) {
-            if (handlerInfos[i] !== otherHandlerInfos[i]) {
-              return false;
-            }
-          }
-          return true;
-        }
-
-        function finalizeQueryParamChange(router, resolvedHandlers, newQueryParams, transition) {
-          // We fire a finalizeQueryParamChange event which
-          // gives the new route hierarchy a chance to tell
-          // us which query params it's consuming and what
-          // their final values are. If a query param is
-          // no longer consumed in the final route hierarchy,
-          // its serialized segment will be removed
-          // from the URL.
-
-          for (var k in newQueryParams) {
-            if (newQueryParams.hasOwnProperty(k) &&
-                newQueryParams[k] === null) {
-              delete newQueryParams[k];
-            }
-          }
-
-          var finalQueryParamsArray = [];
-          trigger(router, resolvedHandlers, true, ['finalizeQueryParamChange', newQueryParams, finalQueryParamsArray, transition]);
-
-          if (transition) {
-            transition._visibleQueryParams = {};
-          }
-
-          var finalQueryParams = {};
-          for (var i = 0, len = finalQueryParamsArray.length; i < len; ++i) {
-            var qp = finalQueryParamsArray[i];
-            finalQueryParams[qp.key] = qp.value;
-            if (transition && qp.visible !== false) {
-              transition._visibleQueryParams[qp.key] = qp.value;
-            }
-          }
-          return finalQueryParams;
-        }
-
-        function notifyExistingHandlers(router, newState, newTransition) {
-          var oldHandlers = router.state.handlerInfos,
-              changing = [],
-              leavingIndex = null,
-              leaving, leavingChecker, i, oldHandlerLen, oldHandler, newHandler;
-
-          oldHandlerLen = oldHandlers.length;
-          for (i = 0; i < oldHandlerLen; i++) {
-            oldHandler = oldHandlers[i];
-            newHandler = newState.handlerInfos[i];
-
-            if (!newHandler || oldHandler.name !== newHandler.name) {
-              leavingIndex = i;
-              break;
-            }
-
-            if (!newHandler.isResolved) {
-              changing.push(oldHandler);
-            }
-          }
-
-          if (leavingIndex !== null) {
-            leaving = oldHandlers.slice(leavingIndex, oldHandlerLen);
-            leavingChecker = function(name) {
-              for (var h = 0, len = leaving.length; h < len; h++) {
-                if (leaving[h].name === name) {
-                  return true;
-                }
-              }
-              return false;
+          currentState.handlers = handlers;
+          currentState.regex = new RegExp(regex + "$");
+          currentState.types = types;
+
+          if (name = options && options.as) {
+            this.names[name] = {
+              segments: allSegments,
+              handlers: handlers
             };
           }
+        },
 
-          trigger(router, oldHandlers, true, ['willTransition', newTransition]);
+        handlersFor: function(name) {
+          var route = this.names[name], result = [];
+          if (!route) { throw new Error("There is no route named " + name); }
 
-          if (router.willTransition) {
-            router.willTransition(oldHandlers, newState.handlerInfos, newTransition);
+          for (var i=0, l=route.handlers.length; i<l; i++) {
+            result.push(route.handlers[i]);
+          }
+
+          return result;
+        },
+
+        hasRoute: function(name) {
+          return !!this.names[name];
+        },
+
+        generate: function(name, params) {
+          var route = this.names[name], output = "";
+          if (!route) { throw new Error("There is no route named " + name); }
+
+          var segments = route.segments;
+
+          for (var i=0, l=segments.length; i<l; i++) {
+            var segment = segments[i];
+
+            if (segment instanceof EpsilonSegment) { continue; }
+
+            output += "/";
+            output += segment.generate(params);
+          }
+
+          if (output.charAt(0) !== '/') { output = '/' + output; }
+
+          if (params && params.queryParams) {
+            output += this.generateQueryString(params.queryParams, route.handlers);
+          }
+
+          return output;
+        },
+
+        generateQueryString: function(params, handlers) {
+          var pairs = [];
+          var keys = [];
+          for(var key in params) {
+            if (params.hasOwnProperty(key)) {
+              keys.push(key);
+            }
+          }
+          keys.sort();
+          for (var i = 0, len = keys.length; i < len; i++) {
+            key = keys[i];
+            var value = params[key];
+            if (value == null) {
+              continue;
+            }
+            var pair = encodeURIComponent(key);
+            if (isArray(value)) {
+              for (var j = 0, l = value.length; j < l; j++) {
+                var arrayPair = key + '[]' + '=' + encodeURIComponent(value[j]);
+                pairs.push(arrayPair);
+              }
+            } else {
+              pair += "=" + encodeURIComponent(value);
+              pairs.push(pair);
+            }
+          }
+
+          if (pairs.length === 0) { return ''; }
+
+          return "?" + pairs.join("&");
+        },
+
+        parseQueryString: function(queryString) {
+          var pairs = queryString.split("&"), queryParams = {};
+          for(var i=0; i < pairs.length; i++) {
+            var pair      = pairs[i].split('='),
+              key       = decodeQueryParamPart(pair[0]),
+              keyLength = key.length,
+              isArray = false,
+              value;
+            if (pair.length === 1) {
+              value = 'true';
+            } else {
+              //Handle arrays
+              if (keyLength > 2 && key.slice(keyLength -2) === '[]') {
+                isArray = true;
+                key = key.slice(0, keyLength - 2);
+                if(!queryParams[key]) {
+                  queryParams[key] = [];
+                }
+              }
+              value = pair[1] ? decodeQueryParamPart(pair[1]) : '';
+            }
+            if (isArray) {
+              queryParams[key].push(value);
+            } else {
+              queryParams[key] = value;
+            }
+          }
+          return queryParams;
+        },
+
+        recognize: function(path) {
+          var states = [ this.rootState ],
+            pathLen, i, l, queryStart, queryParams = {},
+            isSlashDropped = false;
+
+          queryStart = path.indexOf('?');
+          if (queryStart !== -1) {
+            var queryString = path.substr(queryStart + 1, path.length);
+            path = path.substr(0, queryStart);
+            queryParams = this.parseQueryString(queryString);
+          }
+
+          path = decodeURI(path);
+
+          // DEBUG GROUP path
+
+          if (path.charAt(0) !== "/") { path = "/" + path; }
+
+          pathLen = path.length;
+          if (pathLen > 1 && path.charAt(pathLen - 1) === "/") {
+            path = path.substr(0, pathLen - 1);
+            isSlashDropped = true;
+          }
+
+          for (i=0, l=path.length; i<l; i++) {
+            states = recognizeChar(states, path.charAt(i));
+            if (!states.length) { break; }
+          }
+
+          // END DEBUG GROUP
+
+          var solutions = [];
+          for (i=0, l=states.length; i<l; i++) {
+            if (states[i].handlers) { solutions.push(states[i]); }
+          }
+
+          states = sortSolutions(solutions);
+
+          var state = solutions[0];
+
+          if (state && state.handlers) {
+            // if a trailing slash was dropped and a star segment is the last segment
+            // specified, put the trailing slash back
+            if (isSlashDropped && state.regex.source.slice(-5) === "(.+)$") {
+              path = path + "/";
+            }
+            return findHandler(state, path, queryParams);
           }
         }
+      };
 
-        __exports__["default"] = Router;
-      });
-  enifed("router/transition-intent",
-      ["./utils","exports"],
-      function(__dependency1__, __exports__) {
-        "use strict";
-        var merge = __dependency1__.merge;
+      RouteRecognizer.prototype.map = map;
 
-        function TransitionIntent(props) {
-          this.initialize(props);
+      RouteRecognizer.VERSION = '0.1.5';
 
-          // TODO: wat
-          this.data = this.data || {};
+      __exports__["default"] = RouteRecognizer;
+    });
+  enifed("route-recognizer/dsl",
+    ["exports"],
+    function(__exports__) {
+      "use strict";
+      function Target(path, matcher, delegate) {
+        this.path = path;
+        this.matcher = matcher;
+        this.delegate = delegate;
+      }
+
+      Target.prototype = {
+        to: function(target, callback) {
+          var delegate = this.delegate;
+
+          if (delegate && delegate.willAddRoute) {
+            target = delegate.willAddRoute(this.matcher.target, target);
+          }
+
+          this.matcher.add(this.path, target);
+
+          if (callback) {
+            if (callback.length === 0) { throw new Error("You must have an argument in the function passed to `to`"); }
+            this.matcher.addChild(this.path, target, callback, this.delegate);
+          }
+          return this;
+        }
+      };
+
+      function Matcher(target) {
+        this.routes = {};
+        this.children = {};
+        this.target = target;
+      }
+
+      Matcher.prototype = {
+        add: function(path, handler) {
+          this.routes[path] = handler;
+        },
+
+        addChild: function(path, target, callback, delegate) {
+          var matcher = new Matcher(target);
+          this.children[path] = matcher;
+
+          var match = generateMatch(path, matcher, delegate);
+
+          if (delegate && delegate.contextEntered) {
+            delegate.contextEntered(target, match);
+          }
+
+          callback(match);
+        }
+      };
+
+      function generateMatch(startingPath, matcher, delegate) {
+        return function(path, nestedCallback) {
+          var fullPath = startingPath + path;
+
+          if (nestedCallback) {
+            nestedCallback(generateMatch(fullPath, matcher, delegate));
+          } else {
+            return new Target(startingPath + path, matcher, delegate);
+          }
+        };
+      }
+
+      function addRoute(routeArray, path, handler) {
+        var len = 0;
+        for (var i=0, l=routeArray.length; i<l; i++) {
+          len += routeArray[i].path.length;
         }
 
-        TransitionIntent.prototype = {
-          initialize: null,
-          applyToState: null
+        path = path.substr(len);
+        var route = { path: path, handler: handler };
+        routeArray.push(route);
+      }
+
+      function eachRoute(baseRoute, matcher, callback, binding) {
+        var routes = matcher.routes;
+
+        for (var path in routes) {
+          if (routes.hasOwnProperty(path)) {
+            var routeArray = baseRoute.slice();
+            addRoute(routeArray, path, routes[path]);
+
+            if (matcher.children[path]) {
+              eachRoute(routeArray, matcher.children[path], callback, binding);
+            } else {
+              callback.call(binding, routeArray);
+            }
+          }
+        }
+      }
+
+      __exports__["default"] = function(callback, addRouteCallback) {
+        var matcher = new Matcher();
+
+        callback(generateMatch("", matcher, this.delegate));
+
+        eachRoute([], matcher, function(route) {
+          if (addRouteCallback) { addRouteCallback(this, route); }
+          else { this.add(route); }
+        }, this);
+      }
+    });
+  enifed("router",
+    ["./router/router","exports"],
+    function(__dependency1__, __exports__) {
+      "use strict";
+      var Router = __dependency1__["default"];
+
+      __exports__["default"] = Router;
+    });
+  enifed("router/handler-info",
+    ["./utils","rsvp/promise","exports"],
+    function(__dependency1__, __dependency2__, __exports__) {
+      "use strict";
+      var bind = __dependency1__.bind;
+      var merge = __dependency1__.merge;
+      var serialize = __dependency1__.serialize;
+      var promiseLabel = __dependency1__.promiseLabel;
+      var applyHook = __dependency1__.applyHook;
+      var Promise = __dependency2__["default"];
+
+      function HandlerInfo(_props) {
+        var props = _props || {};
+        merge(this, props);
+        this.initialize(props);
+      }
+
+      HandlerInfo.prototype = {
+        name: null,
+        handler: null,
+        params: null,
+        context: null,
+
+        // Injected by the handler info factory.
+        factory: null,
+
+        initialize: function() {},
+
+        log: function(payload, message) {
+          if (payload.log) {
+            payload.log(this.name + ': ' + message);
+          }
+        },
+
+        promiseLabel: function(label) {
+          return promiseLabel("'" + this.name + "' " + label);
+        },
+
+        getUnresolved: function() {
+          return this;
+        },
+
+        serialize: function() {
+          return this.params || {};
+        },
+
+        resolve: function(shouldContinue, payload) {
+          var checkForAbort  = bind(this, this.checkForAbort,      shouldContinue),
+            beforeModel    = bind(this, this.runBeforeModelHook, payload),
+            model          = bind(this, this.getModel,           payload),
+            afterModel     = bind(this, this.runAfterModelHook,  payload),
+            becomeResolved = bind(this, this.becomeResolved,     payload);
+
+          return Promise.resolve(undefined, this.promiseLabel("Start handler"))
+            .then(checkForAbort, null, this.promiseLabel("Check for abort"))
+            .then(beforeModel, null, this.promiseLabel("Before model"))
+            .then(checkForAbort, null, this.promiseLabel("Check if aborted during 'beforeModel' hook"))
+            .then(model, null, this.promiseLabel("Model"))
+            .then(checkForAbort, null, this.promiseLabel("Check if aborted in 'model' hook"))
+            .then(afterModel, null, this.promiseLabel("After model"))
+            .then(checkForAbort, null, this.promiseLabel("Check if aborted in 'afterModel' hook"))
+            .then(becomeResolved, null, this.promiseLabel("Become resolved"));
+        },
+
+        runBeforeModelHook: function(payload) {
+          if (payload.trigger) {
+            payload.trigger(true, 'willResolveModel', payload, this.handler);
+          }
+          return this.runSharedModelHook(payload, 'beforeModel', []);
+        },
+
+        runAfterModelHook: function(payload, resolvedModel) {
+          // Stash the resolved model on the payload.
+          // This makes it possible for users to swap out
+          // the resolved model in afterModel.
+          var name = this.name;
+          this.stashResolvedModel(payload, resolvedModel);
+
+          return this.runSharedModelHook(payload, 'afterModel', [resolvedModel])
+            .then(function() {
+              // Ignore the fulfilled value returned from afterModel.
+              // Return the value stashed in resolvedModels, which
+              // might have been swapped out in afterModel.
+              return payload.resolvedModels[name];
+            }, null, this.promiseLabel("Ignore fulfillment value and return model value"));
+        },
+
+        runSharedModelHook: function(payload, hookName, args) {
+          this.log(payload, "calling " + hookName + " hook");
+
+          if (this.queryParams) {
+            args.push(this.queryParams);
+          }
+          args.push(payload);
+
+          var result = applyHook(this.handler, hookName, args);
+
+          if (result && result.isTransition) {
+            result = null;
+          }
+
+          return Promise.resolve(result, this.promiseLabel("Resolve value returned from one of the model hooks"));
+        },
+
+        // overridden by subclasses
+        getModel: null,
+
+        checkForAbort: function(shouldContinue, promiseValue) {
+          return Promise.resolve(shouldContinue(), this.promiseLabel("Check for abort")).then(function() {
+            // We don't care about shouldContinue's resolve value;
+            // pass along the original value passed to this fn.
+            return promiseValue;
+          }, null, this.promiseLabel("Ignore fulfillment value and continue"));
+        },
+
+        stashResolvedModel: function(payload, resolvedModel) {
+          payload.resolvedModels = payload.resolvedModels || {};
+          payload.resolvedModels[this.name] = resolvedModel;
+        },
+
+        becomeResolved: function(payload, resolvedContext) {
+          var params = this.serialize(resolvedContext);
+
+          if (payload) {
+            this.stashResolvedModel(payload, resolvedContext);
+            payload.params = payload.params || {};
+            payload.params[this.name] = params;
+          }
+
+          return this.factory('resolved', {
+            context: resolvedContext,
+            name: this.name,
+            handler: this.handler,
+            params: params
+          });
+        },
+
+        shouldSupercede: function(other) {
+          // Prefer this newer handlerInfo over `other` if:
+          // 1) The other one doesn't exist
+          // 2) The names don't match
+          // 3) This handler has a context that doesn't match
+          //    the other one (or the other one doesn't have one).
+          // 4) This handler has parameters that don't match the other.
+          if (!other) { return true; }
+
+          var contextsMatch = (other.context === this.context);
+          return other.name !== this.name ||
+            (this.hasOwnProperty('context') && !contextsMatch) ||
+            (this.hasOwnProperty('params') && !paramsMatch(this.params, other.params));
+        }
+      };
+
+      function paramsMatch(a, b) {
+        if ((!a) ^ (!b)) {
+          // Only one is null.
+          return false;
+        }
+
+        if (!a) {
+          // Both must be null.
+          return true;
+        }
+
+        // Note: this assumes that both params have the same
+        // number of keys, but since we're comparing the
+        // same handlers, they should.
+        for (var k in a) {
+          if (a.hasOwnProperty(k) && a[k] !== b[k]) {
+            return false;
+          }
+        }
+        return true;
+      }
+
+      __exports__["default"] = HandlerInfo;
+    });
+  enifed("router/handler-info/factory",
+    ["router/handler-info/resolved-handler-info","router/handler-info/unresolved-handler-info-by-object","router/handler-info/unresolved-handler-info-by-param","exports"],
+    function(__dependency1__, __dependency2__, __dependency3__, __exports__) {
+      "use strict";
+      var ResolvedHandlerInfo = __dependency1__["default"];
+      var UnresolvedHandlerInfoByObject = __dependency2__["default"];
+      var UnresolvedHandlerInfoByParam = __dependency3__["default"];
+
+      handlerInfoFactory.klasses = {
+        resolved: ResolvedHandlerInfo,
+        param: UnresolvedHandlerInfoByParam,
+        object: UnresolvedHandlerInfoByObject
+      };
+
+      function handlerInfoFactory(name, props) {
+        var Ctor = handlerInfoFactory.klasses[name],
+          handlerInfo = new Ctor(props || {});
+        handlerInfo.factory = handlerInfoFactory;
+        return handlerInfo;
+      }
+
+      __exports__["default"] = handlerInfoFactory;
+    });
+  enifed("router/handler-info/resolved-handler-info",
+    ["../handler-info","router/utils","rsvp/promise","exports"],
+    function(__dependency1__, __dependency2__, __dependency3__, __exports__) {
+      "use strict";
+      var HandlerInfo = __dependency1__["default"];
+      var subclass = __dependency2__.subclass;
+      var promiseLabel = __dependency2__.promiseLabel;
+      var Promise = __dependency3__["default"];
+
+      var ResolvedHandlerInfo = subclass(HandlerInfo, {
+        resolve: function(shouldContinue, payload) {
+          // A ResolvedHandlerInfo just resolved with itself.
+          if (payload && payload.resolvedModels) {
+            payload.resolvedModels[this.name] = this.context;
+          }
+          return Promise.resolve(this, this.promiseLabel("Resolve"));
+        },
+
+        getUnresolved: function() {
+          return this.factory('param', {
+            name: this.name,
+            handler: this.handler,
+            params: this.params
+          });
+        },
+
+        isResolved: true
+      });
+
+      __exports__["default"] = ResolvedHandlerInfo;
+    });
+  enifed("router/handler-info/unresolved-handler-info-by-object",
+    ["../handler-info","router/utils","rsvp/promise","exports"],
+    function(__dependency1__, __dependency2__, __dependency3__, __exports__) {
+      "use strict";
+      var HandlerInfo = __dependency1__["default"];
+      var merge = __dependency2__.merge;
+      var subclass = __dependency2__.subclass;
+      var promiseLabel = __dependency2__.promiseLabel;
+      var isParam = __dependency2__.isParam;
+      var Promise = __dependency3__["default"];
+
+      var UnresolvedHandlerInfoByObject = subclass(HandlerInfo, {
+        getModel: function(payload) {
+          this.log(payload, this.name + ": resolving provided model");
+          return Promise.resolve(this.context);
+        },
+
+        initialize: function(props) {
+          this.names = props.names || [];
+          this.context = props.context;
+        },
+
+        /**
+         @private
+
+         Serializes a handler using its custom `serialize` method or
+         by a default that looks up the expected property name from
+         the dynamic segment.
+
+         @param {Object} model the model to be serialized for this handler
+         */
+        serialize: function(_model) {
+          var model = _model || this.context,
+            names = this.names,
+            handler = this.handler;
+
+          var object = {};
+          if (isParam(model)) {
+            object[names[0]] = model;
+            return object;
+          }
+
+          // Use custom serialize if it exists.
+          if (handler.serialize) {
+            return handler.serialize(model, names);
+          }
+
+          if (names.length !== 1) { return; }
+
+          var name = names[0];
+
+          if (/_id$/.test(name)) {
+            object[name] = model.id;
+          } else {
+            object[name] = model;
+          }
+          return object;
+        }
+      });
+
+      __exports__["default"] = UnresolvedHandlerInfoByObject;
+    });
+  enifed("router/handler-info/unresolved-handler-info-by-param",
+    ["../handler-info","router/utils","exports"],
+    function(__dependency1__, __dependency2__, __exports__) {
+      "use strict";
+      var HandlerInfo = __dependency1__["default"];
+      var resolveHook = __dependency2__.resolveHook;
+      var merge = __dependency2__.merge;
+      var subclass = __dependency2__.subclass;
+      var promiseLabel = __dependency2__.promiseLabel;
+
+      // Generated by URL transitions and non-dynamic route segments in named Transitions.
+      var UnresolvedHandlerInfoByParam = subclass (HandlerInfo, {
+        initialize: function(props) {
+          this.params = props.params || {};
+        },
+
+        getModel: function(payload) {
+          var fullParams = this.params;
+          if (payload && payload.queryParams) {
+            fullParams = {};
+            merge(fullParams, this.params);
+            fullParams.queryParams = payload.queryParams;
+          }
+
+          var handler = this.handler;
+          var hookName = resolveHook(handler, 'deserialize') ||
+            resolveHook(handler, 'model');
+
+          return this.runSharedModelHook(payload, hookName, [fullParams]);
+        }
+      });
+
+      __exports__["default"] = UnresolvedHandlerInfoByParam;
+    });
+  enifed("router/router",
+    ["route-recognizer","rsvp/promise","./utils","./transition-state","./transition","./transition-intent/named-transition-intent","./transition-intent/url-transition-intent","./handler-info","exports"],
+    function(__dependency1__, __dependency2__, __dependency3__, __dependency4__, __dependency5__, __dependency6__, __dependency7__, __dependency8__, __exports__) {
+      "use strict";
+      var RouteRecognizer = __dependency1__["default"];
+      var Promise = __dependency2__["default"];
+      var trigger = __dependency3__.trigger;
+      var log = __dependency3__.log;
+      var slice = __dependency3__.slice;
+      var forEach = __dependency3__.forEach;
+      var merge = __dependency3__.merge;
+      var serialize = __dependency3__.serialize;
+      var extractQueryParams = __dependency3__.extractQueryParams;
+      var getChangelist = __dependency3__.getChangelist;
+      var promiseLabel = __dependency3__.promiseLabel;
+      var callHook = __dependency3__.callHook;
+      var TransitionState = __dependency4__["default"];
+      var logAbort = __dependency5__.logAbort;
+      var Transition = __dependency5__.Transition;
+      var TransitionAborted = __dependency5__.TransitionAborted;
+      var NamedTransitionIntent = __dependency6__["default"];
+      var URLTransitionIntent = __dependency7__["default"];
+      var ResolvedHandlerInfo = __dependency8__.ResolvedHandlerInfo;
+
+      var pop = Array.prototype.pop;
+
+      function Router(_options) {
+        var options = _options || {};
+        this.getHandler = options.getHandler || this.getHandler;
+        this.updateURL = options.updateURL || this.updateURL;
+        this.replaceURL = options.replaceURL || this.replaceURL;
+        this.didTransition = options.didTransition || this.didTransition;
+        this.willTransition = options.willTransition || this.willTransition;
+        this.delegate = options.delegate || this.delegate;
+        this.triggerEvent = options.triggerEvent || this.triggerEvent;
+        this.log = options.log || this.log;
+
+        this.recognizer = new RouteRecognizer();
+        this.reset();
+      }
+
+      function getTransitionByIntent(intent, isIntermediate) {
+        var wasTransitioning = !!this.activeTransition;
+        var oldState = wasTransitioning ? this.activeTransition.state : this.state;
+        var newTransition;
+
+        var newState = intent.applyToState(oldState, this.recognizer, this.getHandler, isIntermediate);
+        var queryParamChangelist = getChangelist(oldState.queryParams, newState.queryParams);
+
+        if (handlerInfosEqual(newState.handlerInfos, oldState.handlerInfos)) {
+
+          // This is a no-op transition. See if query params changed.
+          if (queryParamChangelist) {
+            newTransition = this.queryParamsTransition(queryParamChangelist, wasTransitioning, oldState, newState);
+            if (newTransition) {
+              return newTransition;
+            }
+          }
+
+          // No-op. No need to create a new transition.
+          return this.activeTransition || new Transition(this);
+        }
+
+        if (isIntermediate) {
+          setupContexts(this, newState);
+          return;
+        }
+
+        // Create a new transition to the destination route.
+        newTransition = new Transition(this, intent, newState);
+
+        // Abort and usurp any previously active transition.
+        if (this.activeTransition) {
+          this.activeTransition.abort();
+        }
+        this.activeTransition = newTransition;
+
+        // Transition promises by default resolve with resolved state.
+        // For our purposes, swap out the promise to resolve
+        // after the transition has been finalized.
+        newTransition.promise = newTransition.promise.then(function(result) {
+          return finalizeTransition(newTransition, result.state);
+        }, null, promiseLabel("Settle transition promise when transition is finalized"));
+
+        if (!wasTransitioning) {
+          notifyExistingHandlers(this, newState, newTransition);
+        }
+
+        fireQueryParamDidChange(this, newState, queryParamChangelist);
+
+        return newTransition;
+      }
+
+      Router.prototype = {
+
+        /**
+         The main entry point into the router. The API is essentially
+         the same as the `map` method in `route-recognizer`.
+
+         This method extracts the String handler at the last `.to()`
+         call and uses it as the name of the whole route.
+
+         @param {Function} callback
+         */
+        map: function(callback) {
+          this.recognizer.delegate = this.delegate;
+
+          this.recognizer.map(callback, function(recognizer, routes) {
+            for (var i = routes.length - 1, proceed = true; i >= 0 && proceed; --i) {
+              var route = routes[i];
+              recognizer.add(routes, { as: route.handler });
+              proceed = route.path === '/' || route.path === '' || route.handler.slice(-6) === '.index';
+            }
+          });
+        },
+
+        hasRoute: function(route) {
+          return this.recognizer.hasRoute(route);
+        },
+
+        getHandler: function() {},
+
+        queryParamsTransition: function(changelist, wasTransitioning, oldState, newState) {
+          var router = this;
+
+          fireQueryParamDidChange(this, newState, changelist);
+
+          if (!wasTransitioning && this.activeTransition) {
+            // One of the handlers in queryParamsDidChange
+            // caused a transition. Just return that transition.
+            return this.activeTransition;
+          } else {
+            // Running queryParamsDidChange didn't change anything.
+            // Just update query params and be on our way.
+
+            // We have to return a noop transition that will
+            // perform a URL update at the end. This gives
+            // the user the ability to set the url update
+            // method (default is replaceState).
+            var newTransition = new Transition(this);
+            newTransition.queryParamsOnly = true;
+
+            oldState.queryParams = finalizeQueryParamChange(this, newState.handlerInfos, newState.queryParams, newTransition);
+
+            newTransition.promise = newTransition.promise.then(function(result) {
+              updateURL(newTransition, oldState, true);
+              if (router.didTransition) {
+                router.didTransition(router.currentHandlerInfos);
+              }
+              return result;
+            }, null, promiseLabel("Transition complete"));
+            return newTransition;
+          }
+        },
+
+        // NOTE: this doesn't really belong here, but here
+        // it shall remain until our ES6 transpiler can
+        // handle cyclical deps.
+        transitionByIntent: function(intent, isIntermediate) {
+          try {
+            return getTransitionByIntent.apply(this, arguments);
+          } catch(e) {
+            return new Transition(this, intent, null, e);
+          }
+        },
+
+        /**
+         Clears the current and target route handlers and triggers exit
+         on each of them starting at the leaf and traversing up through
+         its ancestors.
+         */
+        reset: function() {
+          if (this.state) {
+            forEach(this.state.handlerInfos.slice().reverse(), function(handlerInfo) {
+              var handler = handlerInfo.handler;
+              callHook(handler, 'exit');
+            });
+          }
+
+          this.state = new TransitionState();
+          this.currentHandlerInfos = null;
+        },
+
+        activeTransition: null,
+
+        /**
+         var handler = handlerInfo.handler;
+         The entry point for handling a change to the URL (usually
+         via the back and forward button).
+
+         Returns an Array of handlers and the parameters associated
+         with those parameters.
+
+         @param {String} url a URL to process
+
+         @return {Array} an Array of `[handler, parameter]` tuples
+         */
+        handleURL: function(url) {
+          // Perform a URL-based transition, but don't change
+          // the URL afterward, since it already happened.
+          var args = slice.call(arguments);
+          if (url.charAt(0) !== '/') { args[0] = '/' + url; }
+
+          return doTransition(this, args).method(null);
+        },
+
+        /**
+         Hook point for updating the URL.
+
+         @param {String} url a URL to update to
+         */
+        updateURL: function() {
+          throw new Error("updateURL is not implemented");
+        },
+
+        /**
+         Hook point for replacing the current URL, i.e. with replaceState
+
+         By default this behaves the same as `updateURL`
+
+         @param {String} url a URL to update to
+         */
+        replaceURL: function(url) {
+          this.updateURL(url);
+        },
+
+        /**
+         Transition into the specified named route.
+
+         If necessary, trigger the exit callback on any handlers
+         that are no longer represented by the target route.
+
+         @param {String} name the name of the route
+         */
+        transitionTo: function(name) {
+          return doTransition(this, arguments);
+        },
+
+        intermediateTransitionTo: function(name) {
+          return doTransition(this, arguments, true);
+        },
+
+        refresh: function(pivotHandler) {
+          var state = this.activeTransition ? this.activeTransition.state : this.state;
+          var handlerInfos = state.handlerInfos;
+          var params = {};
+          for (var i = 0, len = handlerInfos.length; i < len; ++i) {
+            var handlerInfo = handlerInfos[i];
+            params[handlerInfo.name] = handlerInfo.params || {};
+          }
+
+          log(this, "Starting a refresh transition");
+          var intent = new NamedTransitionIntent({
+            name: handlerInfos[handlerInfos.length - 1].name,
+            pivotHandler: pivotHandler || handlerInfos[0].handler,
+            contexts: [], // TODO collect contexts...?
+            queryParams: this._changedQueryParams || state.queryParams || {}
+          });
+
+          return this.transitionByIntent(intent, false);
+        },
+
+        /**
+         Identical to `transitionTo` except that the current URL will be replaced
+         if possible.
+
+         This method is intended primarily for use with `replaceState`.
+
+         @param {String} name the name of the route
+         */
+        replaceWith: function(name) {
+          return doTransition(this, arguments).method('replace');
+        },
+
+        /**
+         Take a named route and context objects and generate a
+         URL.
+
+         @param {String} name the name of the route to generate
+         a URL for
+         @param {...Object} objects a list of objects to serialize
+
+         @return {String} a URL
+         */
+        generate: function(handlerName) {
+
+          var partitionedArgs = extractQueryParams(slice.call(arguments, 1)),
+            suppliedParams = partitionedArgs[0],
+            queryParams = partitionedArgs[1];
+
+          // Construct a TransitionIntent with the provided params
+          // and apply it to the present state of the router.
+          var intent = new NamedTransitionIntent({ name: handlerName, contexts: suppliedParams });
+          var state = intent.applyToState(this.state, this.recognizer, this.getHandler);
+          var params = {};
+
+          for (var i = 0, len = state.handlerInfos.length; i < len; ++i) {
+            var handlerInfo = state.handlerInfos[i];
+            var handlerParams = handlerInfo.serialize();
+            merge(params, handlerParams);
+          }
+          params.queryParams = queryParams;
+
+          return this.recognizer.generate(handlerName, params);
+        },
+
+        applyIntent: function(handlerName, contexts) {
+          var intent = new NamedTransitionIntent({
+            name: handlerName,
+            contexts: contexts
+          });
+
+          var state = this.activeTransition && this.activeTransition.state || this.state;
+          return intent.applyToState(state, this.recognizer, this.getHandler);
+        },
+
+        isActiveIntent: function(handlerName, contexts, queryParams, _state) {
+          var state = _state || this.state,
+            targetHandlerInfos = state.handlerInfos,
+            found = false, names, object, handlerInfo, handlerObj, i, len;
+
+          if (!targetHandlerInfos.length) { return false; }
+
+          var targetHandler = targetHandlerInfos[targetHandlerInfos.length - 1].name;
+          var recogHandlers = this.recognizer.handlersFor(targetHandler);
+
+          var index = 0;
+          for (len = recogHandlers.length; index < len; ++index) {
+            handlerInfo = targetHandlerInfos[index];
+            if (handlerInfo.name === handlerName) { break; }
+          }
+
+          if (index === recogHandlers.length) {
+            // The provided route name isn't even in the route hierarchy.
+            return false;
+          }
+
+          var testState = new TransitionState();
+          testState.handlerInfos = targetHandlerInfos.slice(0, index + 1);
+          recogHandlers = recogHandlers.slice(0, index + 1);
+
+          var intent = new NamedTransitionIntent({
+            name: targetHandler,
+            contexts: contexts
+          });
+
+          var newState = intent.applyToHandlers(testState, recogHandlers, this.getHandler, targetHandler, true, true);
+
+          var handlersEqual = handlerInfosEqual(newState.handlerInfos, testState.handlerInfos);
+          if (!queryParams || !handlersEqual) {
+            return handlersEqual;
+          }
+
+          // Get a hash of QPs that will still be active on new route
+          var activeQPsOnNewHandler = {};
+          merge(activeQPsOnNewHandler, queryParams);
+
+          var activeQueryParams  = state.queryParams;
+          for (var key in activeQueryParams) {
+            if (activeQueryParams.hasOwnProperty(key) &&
+              activeQPsOnNewHandler.hasOwnProperty(key)) {
+              activeQPsOnNewHandler[key] = activeQueryParams[key];
+            }
+          }
+
+          return handlersEqual && !getChangelist(activeQPsOnNewHandler, queryParams);
+        },
+
+        isActive: function(handlerName) {
+          var partitionedArgs = extractQueryParams(slice.call(arguments, 1));
+          return this.isActiveIntent(handlerName, partitionedArgs[0], partitionedArgs[1]);
+        },
+
+        trigger: function(name) {
+          var args = slice.call(arguments);
+          trigger(this, this.currentHandlerInfos, false, args);
+        },
+
+        /**
+         Hook point for logging transition status updates.
+
+         @param {String} message The message to log.
+         */
+        log: null
+      };
+
+      /**
+       @private
+
+       Fires queryParamsDidChange event
+       */
+      function fireQueryParamDidChange(router, newState, queryParamChangelist) {
+        // If queryParams changed trigger event
+        if (queryParamChangelist) {
+
+          // This is a little hacky but we need some way of storing
+          // changed query params given that no activeTransition
+          // is guaranteed to have occurred.
+          router._changedQueryParams = queryParamChangelist.all;
+          trigger(router, newState.handlerInfos, true, ['queryParamsDidChange', queryParamChangelist.changed, queryParamChangelist.all, queryParamChangelist.removed]);
+          router._changedQueryParams = null;
+        }
+      }
+
+      /**
+       @private
+
+       Takes an Array of `HandlerInfo`s, figures out which ones are
+       exiting, entering, or changing contexts, and calls the
+       proper handler hooks.
+
+       For example, consider the following tree of handlers. Each handler is
+       followed by the URL segment it handles.
+
+       ```
+       |~index ("/")
+       | |~posts ("/posts")
+       | | |-showPost ("/:id")
+       | | |-newPost ("/new")
+       | | |-editPost ("/edit")
+       | |~about ("/about/:id")
+       ```
+
+       Consider the following transitions:
+
+       1. A URL transition to `/posts/1`.
+       1. Triggers the `*model` callbacks on the
+       `index`, `posts`, and `showPost` handlers
+       2. Triggers the `enter` callback on the same
+       3. Triggers the `setup` callback on the same
+       2. A direct transition to `newPost`
+       1. Triggers the `exit` callback on `showPost`
+       2. Triggers the `enter` callback on `newPost`
+       3. Triggers the `setup` callback on `newPost`
+       3. A direct transition to `about` with a specified
+       context object
+       1. Triggers the `exit` callback on `newPost`
+       and `posts`
+       2. Triggers the `serialize` callback on `about`
+       3. Triggers the `enter` callback on `about`
+       4. Triggers the `setup` callback on `about`
+
+       @param {Router} transition
+       @param {TransitionState} newState
+       */
+      function setupContexts(router, newState, transition) {
+        var partition = partitionHandlers(router.state, newState);
+        var i, l, handler;
+
+        for (i=0, l=partition.exited.length; i<l; i++) {
+          handler = partition.exited[i].handler;
+          delete handler.context;
+
+          callHook(handler, 'reset', true, transition);
+          callHook(handler, 'exit', transition);
+        }
+
+        var oldState = router.oldState = router.state;
+        router.state = newState;
+        var currentHandlerInfos = router.currentHandlerInfos = partition.unchanged.slice();
+
+        try {
+          for (i=0, l=partition.reset.length; i<l; i++) {
+            handler = partition.reset[i].handler;
+            callHook(handler, 'reset', false, transition);
+          }
+
+          for (i=0, l=partition.updatedContext.length; i<l; i++) {
+            handlerEnteredOrUpdated(currentHandlerInfos, partition.updatedContext[i], false, transition);
+          }
+
+          for (i=0, l=partition.entered.length; i<l; i++) {
+            handlerEnteredOrUpdated(currentHandlerInfos, partition.entered[i], true, transition);
+          }
+        } catch(e) {
+          router.state = oldState;
+          router.currentHandlerInfos = oldState.handlerInfos;
+          throw e;
+        }
+
+        router.state.queryParams = finalizeQueryParamChange(router, currentHandlerInfos, newState.queryParams, transition);
+      }
+
+
+      /**
+       @private
+
+       Helper method used by setupContexts. Handles errors or redirects
+       that may happen in enter/setup.
+       */
+      function handlerEnteredOrUpdated(currentHandlerInfos, handlerInfo, enter, transition) {
+
+        var handler = handlerInfo.handler,
+          context = handlerInfo.context;
+
+        if (enter) {
+          callHook(handler, 'enter', transition);
+        }
+        if (transition && transition.isAborted) {
+          throw new TransitionAborted();
+        }
+
+        handler.context = context;
+        callHook(handler, 'contextDidChange');
+
+        callHook(handler, 'setup', context, transition);
+        if (transition && transition.isAborted) {
+          throw new TransitionAborted();
+        }
+
+        currentHandlerInfos.push(handlerInfo);
+
+        return true;
+      }
+
+
+      /**
+       @private
+
+       This function is called when transitioning from one URL to
+       another to determine which handlers are no longer active,
+       which handlers are newly active, and which handlers remain
+       active but have their context changed.
+
+       Take a list of old handlers and new handlers and partition
+       them into four buckets:
+
+       * unchanged: the handler was active in both the old and
+       new URL, and its context remains the same
+       * updated context: the handler was active in both the
+       old and new URL, but its context changed. The handler's
+       `setup` method, if any, will be called with the new
+       context.
+       * exited: the handler was active in the old URL, but is
+       no longer active.
+       * entered: the handler was not active in the old URL, but
+       is now active.
+
+       The PartitionedHandlers structure has four fields:
+
+       * `updatedContext`: a list of `HandlerInfo` objects that
+       represent handlers that remain active but have a changed
+       context
+       * `entered`: a list of `HandlerInfo` objects that represent
+       handlers that are newly active
+       * `exited`: a list of `HandlerInfo` objects that are no
+       longer active.
+       * `unchanged`: a list of `HanderInfo` objects that remain active.
+
+       @param {Array[HandlerInfo]} oldHandlers a list of the handler
+       information for the previous URL (or `[]` if this is the
+       first handled transition)
+       @param {Array[HandlerInfo]} newHandlers a list of the handler
+       information for the new URL
+
+       @return {Partition}
+       */
+      function partitionHandlers(oldState, newState) {
+        var oldHandlers = oldState.handlerInfos;
+        var newHandlers = newState.handlerInfos;
+
+        var handlers = {
+          updatedContext: [],
+          exited: [],
+          entered: [],
+          unchanged: []
         };
 
-        __exports__["default"] = TransitionIntent;
-      });
-  enifed("router/transition-intent/named-transition-intent",
-      ["../transition-intent","../transition-state","../handler-info/factory","../utils","exports"],
-      function(__dependency1__, __dependency2__, __dependency3__, __dependency4__, __exports__) {
-        "use strict";
-        var TransitionIntent = __dependency1__["default"];
-        var TransitionState = __dependency2__["default"];
-        var handlerInfoFactory = __dependency3__["default"];
-        var isParam = __dependency4__.isParam;
-        var extractQueryParams = __dependency4__.extractQueryParams;
-        var merge = __dependency4__.merge;
-        var subclass = __dependency4__.subclass;
+        var handlerChanged, contextChanged = false, i, l;
 
-        __exports__["default"] = subclass(TransitionIntent, {
-          name: null,
-          pivotHandler: null,
-          contexts: null,
-          queryParams: null,
+        for (i=0, l=newHandlers.length; i<l; i++) {
+          var oldHandler = oldHandlers[i], newHandler = newHandlers[i];
 
-          initialize: function(props) {
-            this.name = props.name;
-            this.pivotHandler = props.pivotHandler;
-            this.contexts = props.contexts || [];
-            this.queryParams = props.queryParams;
-          },
-
-          applyToState: function(oldState, recognizer, getHandler, isIntermediate) {
-
-            var partitionedArgs     = extractQueryParams([this.name].concat(this.contexts)),
-                pureArgs              = partitionedArgs[0],
-                queryParams           = partitionedArgs[1],
-                handlers              = recognizer.handlersFor(pureArgs[0]);
-
-            var targetRouteName = handlers[handlers.length-1].handler;
-
-            return this.applyToHandlers(oldState, handlers, getHandler, targetRouteName, isIntermediate);
-          },
-
-          applyToHandlers: function(oldState, handlers, getHandler, targetRouteName, isIntermediate, checkingIfActive) {
-
-            var i, len;
-            var newState = new TransitionState();
-            var objects = this.contexts.slice(0);
-
-            var invalidateIndex = handlers.length;
-
-            // Pivot handlers are provided for refresh transitions
-            if (this.pivotHandler) {
-              for (i = 0, len = handlers.length; i < len; ++i) {
-                if (getHandler(handlers[i].handler) === this.pivotHandler) {
-                  invalidateIndex = i;
-                  break;
-                }
-              }
-            }
-
-            var pivotHandlerFound = !this.pivotHandler;
-
-            for (i = handlers.length - 1; i >= 0; --i) {
-              var result = handlers[i];
-              var name = result.handler;
-              var handler = getHandler(name);
-
-              var oldHandlerInfo = oldState.handlerInfos[i];
-              var newHandlerInfo = null;
-
-              if (result.names.length > 0) {
-                if (i >= invalidateIndex) {
-                  newHandlerInfo = this.createParamHandlerInfo(name, handler, result.names, objects, oldHandlerInfo);
-                } else {
-                  newHandlerInfo = this.getHandlerInfoForDynamicSegment(name, handler, result.names, objects, oldHandlerInfo, targetRouteName, i);
-                }
-              } else {
-                // This route has no dynamic segment.
-                // Therefore treat as a param-based handlerInfo
-                // with empty params. This will cause the `model`
-                // hook to be called with empty params, which is desirable.
-                newHandlerInfo = this.createParamHandlerInfo(name, handler, result.names, objects, oldHandlerInfo);
-              }
-
-              if (checkingIfActive) {
-                // If we're performing an isActive check, we want to
-                // serialize URL params with the provided context, but
-                // ignore mismatches between old and new context.
-                newHandlerInfo = newHandlerInfo.becomeResolved(null, newHandlerInfo.context);
-                var oldContext = oldHandlerInfo && oldHandlerInfo.context;
-                if (result.names.length > 0 && newHandlerInfo.context === oldContext) {
-                  // If contexts match in isActive test, assume params also match.
-                  // This allows for flexibility in not requiring that every last
-                  // handler provide a `serialize` method
-                  newHandlerInfo.params = oldHandlerInfo && oldHandlerInfo.params;
-                }
-                newHandlerInfo.context = oldContext;
-              }
-
-              var handlerToUse = oldHandlerInfo;
-              if (i >= invalidateIndex || newHandlerInfo.shouldSupercede(oldHandlerInfo)) {
-                invalidateIndex = Math.min(i, invalidateIndex);
-                handlerToUse = newHandlerInfo;
-              }
-
-              if (isIntermediate && !checkingIfActive) {
-                handlerToUse = handlerToUse.becomeResolved(null, handlerToUse.context);
-              }
-
-              newState.handlerInfos.unshift(handlerToUse);
-            }
-
-            if (objects.length > 0) {
-              throw new Error("More context objects were passed than there are dynamic segments for the route: " + targetRouteName);
-            }
-
-            if (!isIntermediate) {
-              this.invalidateChildren(newState.handlerInfos, invalidateIndex);
-            }
-
-            merge(newState.queryParams, this.queryParams || {});
-
-            return newState;
-          },
-
-          invalidateChildren: function(handlerInfos, invalidateIndex) {
-            for (var i = invalidateIndex, l = handlerInfos.length; i < l; ++i) {
-              var handlerInfo = handlerInfos[i];
-              handlerInfos[i] = handlerInfos[i].getUnresolved();
-            }
-          },
-
-          getHandlerInfoForDynamicSegment: function(name, handler, names, objects, oldHandlerInfo, targetRouteName, i) {
-
-            var numNames = names.length;
-            var objectToUse;
-            if (objects.length > 0) {
-
-              // Use the objects provided for this transition.
-              objectToUse = objects[objects.length - 1];
-              if (isParam(objectToUse)) {
-                return this.createParamHandlerInfo(name, handler, names, objects, oldHandlerInfo);
-              } else {
-                objects.pop();
-              }
-            } else if (oldHandlerInfo && oldHandlerInfo.name === name) {
-              // Reuse the matching oldHandlerInfo
-              return oldHandlerInfo;
-            } else {
-              if (this.preTransitionState) {
-                var preTransitionHandlerInfo = this.preTransitionState.handlerInfos[i];
-                objectToUse = preTransitionHandlerInfo && preTransitionHandlerInfo.context;
-              } else {
-                // Ideally we should throw this error to provide maximal
-                // information to the user that not enough context objects
-                // were provided, but this proves too cumbersome in Ember
-                // in cases where inner template helpers are evaluated
-                // before parent helpers un-render, in which cases this
-                // error somewhat prematurely fires.
-                //throw new Error("Not enough context objects were provided to complete a transition to " + targetRouteName + ". Specifically, the " + name + " route needs an object that can be serialized into its dynamic URL segments [" + names.join(', ') + "]");
-                return oldHandlerInfo;
-              }
-            }
-
-            return handlerInfoFactory('object', {
-              name: name,
-              handler: handler,
-              context: objectToUse,
-              names: names
-            });
-          },
-
-          createParamHandlerInfo: function(name, handler, names, objects, oldHandlerInfo) {
-            var params = {};
-
-            // Soak up all the provided string/numbers
-            var numNames = names.length;
-            while (numNames--) {
-
-              // Only use old params if the names match with the new handler
-              var oldParams = (oldHandlerInfo && name === oldHandlerInfo.name && oldHandlerInfo.params) || {};
-
-              var peek = objects[objects.length - 1];
-              var paramName = names[numNames];
-              if (isParam(peek)) {
-                params[paramName] = "" + objects.pop();
-              } else {
-                // If we're here, this means only some of the params
-                // were string/number params, so try and use a param
-                // value from a previous handler.
-                if (oldParams.hasOwnProperty(paramName)) {
-                  params[paramName] = oldParams[paramName];
-                } else {
-                  throw new Error("You didn't provide enough string/numeric parameters to satisfy all of the dynamic segments for route " + name);
-                }
-              }
-            }
-
-            return handlerInfoFactory('param', {
-              name: name,
-              handler: handler,
-              params: params
-            });
+          if (!oldHandler || oldHandler.handler !== newHandler.handler) {
+            handlerChanged = true;
           }
-        });
+
+          if (handlerChanged) {
+            handlers.entered.push(newHandler);
+            if (oldHandler) { handlers.exited.unshift(oldHandler); }
+          } else if (contextChanged || oldHandler.context !== newHandler.context) {
+            contextChanged = true;
+            handlers.updatedContext.push(newHandler);
+          } else {
+            handlers.unchanged.push(oldHandler);
+          }
+        }
+
+        for (i=newHandlers.length, l=oldHandlers.length; i<l; i++) {
+          handlers.exited.unshift(oldHandlers[i]);
+        }
+
+        handlers.reset = handlers.updatedContext.slice();
+        handlers.reset.reverse();
+
+        return handlers;
+      }
+
+      function updateURL(transition, state, inputUrl) {
+        var urlMethod = transition.urlMethod;
+
+        if (!urlMethod) {
+          return;
+        }
+
+        var router = transition.router,
+          handlerInfos = state.handlerInfos,
+          handlerName = handlerInfos[handlerInfos.length - 1].name,
+          params = {};
+
+        for (var i = handlerInfos.length - 1; i >= 0; --i) {
+          var handlerInfo = handlerInfos[i];
+          merge(params, handlerInfo.params);
+          if (handlerInfo.handler.inaccessibleByURL) {
+            urlMethod = null;
+          }
+        }
+
+        if (urlMethod) {
+          params.queryParams = transition._visibleQueryParams || state.queryParams;
+          var url = router.recognizer.generate(handlerName, params);
+
+          if (urlMethod === 'replace') {
+            router.replaceURL(url);
+          } else {
+            router.updateURL(url);
+          }
+        }
+      }
+
+      /**
+       @private
+
+       Updates the URL (if necessary) and calls `setupContexts`
+       to update the router's array of `currentHandlerInfos`.
+       */
+      function finalizeTransition(transition, newState) {
+
+        try {
+          log(transition.router, transition.sequence, "Resolved all models on destination route; finalizing transition.");
+
+          var router = transition.router,
+            handlerInfos = newState.handlerInfos,
+            seq = transition.sequence;
+
+          // Run all the necessary enter/setup/exit hooks
+          setupContexts(router, newState, transition);
+
+          // Check if a redirect occurred in enter/setup
+          if (transition.isAborted) {
+            // TODO: cleaner way? distinguish b/w targetHandlerInfos?
+            router.state.handlerInfos = router.currentHandlerInfos;
+            return Promise.reject(logAbort(transition));
+          }
+
+          updateURL(transition, newState, transition.intent.url);
+
+          transition.isActive = false;
+          router.activeTransition = null;
+
+          trigger(router, router.currentHandlerInfos, true, ['didTransition']);
+
+          if (router.didTransition) {
+            router.didTransition(router.currentHandlerInfos);
+          }
+
+          log(router, transition.sequence, "TRANSITION COMPLETE.");
+
+          // Resolve with the final handler.
+          return handlerInfos[handlerInfos.length - 1].handler;
+        } catch(e) {
+          if (!((e instanceof TransitionAborted))) {
+            //var erroneousHandler = handlerInfos.pop();
+            var infos = transition.state.handlerInfos;
+            transition.trigger(true, 'error', e, transition, infos[infos.length-1].handler);
+            transition.abort();
+          }
+
+          throw e;
+        }
+      }
+
+      /**
+       @private
+
+       Begins and returns a Transition based on the provided
+       arguments. Accepts arguments in the form of both URL
+       transitions and named transitions.
+
+       @param {Router} router
+       @param {Array[Object]} args arguments passed to transitionTo,
+       replaceWith, or handleURL
+       */
+      function doTransition(router, args, isIntermediate) {
+        // Normalize blank transitions to root URL transitions.
+        var name = args[0] || '/';
+
+        var lastArg = args[args.length-1];
+        var queryParams = {};
+        if (lastArg && lastArg.hasOwnProperty('queryParams')) {
+          queryParams = pop.call(args).queryParams;
+        }
+
+        var intent;
+        if (args.length === 0) {
+
+          log(router, "Updating query params");
+
+          // A query param update is really just a transition
+          // into the route you're already on.
+          var handlerInfos = router.state.handlerInfos;
+          intent = new NamedTransitionIntent({
+            name: handlerInfos[handlerInfos.length - 1].name,
+            contexts: [],
+            queryParams: queryParams
+          });
+
+        } else if (name.charAt(0) === '/') {
+
+          log(router, "Attempting URL transition to " + name);
+          intent = new URLTransitionIntent({ url: name });
+
+        } else {
+
+          log(router, "Attempting transition to " + name);
+          intent = new NamedTransitionIntent({
+            name: args[0],
+            contexts: slice.call(args, 1),
+            queryParams: queryParams
+          });
+        }
+
+        return router.transitionByIntent(intent, isIntermediate);
+      }
+
+      function handlerInfosEqual(handlerInfos, otherHandlerInfos) {
+        if (handlerInfos.length !== otherHandlerInfos.length) {
+          return false;
+        }
+
+        for (var i = 0, len = handlerInfos.length; i < len; ++i) {
+          if (handlerInfos[i] !== otherHandlerInfos[i]) {
+            return false;
+          }
+        }
+        return true;
+      }
+
+      function finalizeQueryParamChange(router, resolvedHandlers, newQueryParams, transition) {
+        // We fire a finalizeQueryParamChange event which
+        // gives the new route hierarchy a chance to tell
+        // us which query params it's consuming and what
+        // their final values are. If a query param is
+        // no longer consumed in the final route hierarchy,
+        // its serialized segment will be removed
+        // from the URL.
+
+        for (var k in newQueryParams) {
+          if (newQueryParams.hasOwnProperty(k) &&
+            newQueryParams[k] === null) {
+            delete newQueryParams[k];
+          }
+        }
+
+        var finalQueryParamsArray = [];
+        trigger(router, resolvedHandlers, true, ['finalizeQueryParamChange', newQueryParams, finalQueryParamsArray, transition]);
+
+        if (transition) {
+          transition._visibleQueryParams = {};
+        }
+
+        var finalQueryParams = {};
+        for (var i = 0, len = finalQueryParamsArray.length; i < len; ++i) {
+          var qp = finalQueryParamsArray[i];
+          finalQueryParams[qp.key] = qp.value;
+          if (transition && qp.visible !== false) {
+            transition._visibleQueryParams[qp.key] = qp.value;
+          }
+        }
+        return finalQueryParams;
+      }
+
+      function notifyExistingHandlers(router, newState, newTransition) {
+        var oldHandlers = router.state.handlerInfos,
+          changing = [],
+          leavingIndex = null,
+          leaving, leavingChecker, i, oldHandlerLen, oldHandler, newHandler;
+
+        oldHandlerLen = oldHandlers.length;
+        for (i = 0; i < oldHandlerLen; i++) {
+          oldHandler = oldHandlers[i];
+          newHandler = newState.handlerInfos[i];
+
+          if (!newHandler || oldHandler.name !== newHandler.name) {
+            leavingIndex = i;
+            break;
+          }
+
+          if (!newHandler.isResolved) {
+            changing.push(oldHandler);
+          }
+        }
+
+        if (leavingIndex !== null) {
+          leaving = oldHandlers.slice(leavingIndex, oldHandlerLen);
+          leavingChecker = function(name) {
+            for (var h = 0, len = leaving.length; h < len; h++) {
+              if (leaving[h].name === name) {
+                return true;
+              }
+            }
+            return false;
+          };
+        }
+
+        trigger(router, oldHandlers, true, ['willTransition', newTransition]);
+
+        if (router.willTransition) {
+          router.willTransition(oldHandlers, newState.handlerInfos, newTransition);
+        }
+      }
+
+      __exports__["default"] = Router;
+    });
+  enifed("router/transition-intent",
+    ["./utils","exports"],
+    function(__dependency1__, __exports__) {
+      "use strict";
+      var merge = __dependency1__.merge;
+
+      function TransitionIntent(props) {
+        this.initialize(props);
+
+        // TODO: wat
+        this.data = this.data || {};
+      }
+
+      TransitionIntent.prototype = {
+        initialize: null,
+        applyToState: null
+      };
+
+      __exports__["default"] = TransitionIntent;
+    });
+  enifed("router/transition-intent/named-transition-intent",
+    ["../transition-intent","../transition-state","../handler-info/factory","../utils","exports"],
+    function(__dependency1__, __dependency2__, __dependency3__, __dependency4__, __exports__) {
+      "use strict";
+      var TransitionIntent = __dependency1__["default"];
+      var TransitionState = __dependency2__["default"];
+      var handlerInfoFactory = __dependency3__["default"];
+      var isParam = __dependency4__.isParam;
+      var extractQueryParams = __dependency4__.extractQueryParams;
+      var merge = __dependency4__.merge;
+      var subclass = __dependency4__.subclass;
+
+      __exports__["default"] = subclass(TransitionIntent, {
+        name: null,
+        pivotHandler: null,
+        contexts: null,
+        queryParams: null,
+
+        initialize: function(props) {
+          this.name = props.name;
+          this.pivotHandler = props.pivotHandler;
+          this.contexts = props.contexts || [];
+          this.queryParams = props.queryParams;
+        },
+
+        applyToState: function(oldState, recognizer, getHandler, isIntermediate) {
+
+          var partitionedArgs     = extractQueryParams([this.name].concat(this.contexts)),
+            pureArgs              = partitionedArgs[0],
+            queryParams           = partitionedArgs[1],
+            handlers              = recognizer.handlersFor(pureArgs[0]);
+
+          var targetRouteName = handlers[handlers.length-1].handler;
+
+          return this.applyToHandlers(oldState, handlers, getHandler, targetRouteName, isIntermediate);
+        },
+
+        applyToHandlers: function(oldState, handlers, getHandler, targetRouteName, isIntermediate, checkingIfActive) {
+
+          var i, len;
+          var newState = new TransitionState();
+          var objects = this.contexts.slice(0);
+
+          var invalidateIndex = handlers.length;
+
+          // Pivot handlers are provided for refresh transitions
+          if (this.pivotHandler) {
+            for (i = 0, len = handlers.length; i < len; ++i) {
+              if (getHandler(handlers[i].handler) === this.pivotHandler) {
+                invalidateIndex = i;
+                break;
+              }
+            }
+          }
+
+          var pivotHandlerFound = !this.pivotHandler;
+
+          for (i = handlers.length - 1; i >= 0; --i) {
+            var result = handlers[i];
+            var name = result.handler;
+            var handler = getHandler(name);
+
+            var oldHandlerInfo = oldState.handlerInfos[i];
+            var newHandlerInfo = null;
+
+            if (result.names.length > 0) {
+              if (i >= invalidateIndex) {
+                newHandlerInfo = this.createParamHandlerInfo(name, handler, result.names, objects, oldHandlerInfo);
+              } else {
+                newHandlerInfo = this.getHandlerInfoForDynamicSegment(name, handler, result.names, objects, oldHandlerInfo, targetRouteName, i);
+              }
+            } else {
+              // This route has no dynamic segment.
+              // Therefore treat as a param-based handlerInfo
+              // with empty params. This will cause the `model`
+              // hook to be called with empty params, which is desirable.
+              newHandlerInfo = this.createParamHandlerInfo(name, handler, result.names, objects, oldHandlerInfo);
+            }
+
+            if (checkingIfActive) {
+              // If we're performing an isActive check, we want to
+              // serialize URL params with the provided context, but
+              // ignore mismatches between old and new context.
+              newHandlerInfo = newHandlerInfo.becomeResolved(null, newHandlerInfo.context);
+              var oldContext = oldHandlerInfo && oldHandlerInfo.context;
+              if (result.names.length > 0 && newHandlerInfo.context === oldContext) {
+                // If contexts match in isActive test, assume params also match.
+                // This allows for flexibility in not requiring that every last
+                // handler provide a `serialize` method
+                newHandlerInfo.params = oldHandlerInfo && oldHandlerInfo.params;
+              }
+              newHandlerInfo.context = oldContext;
+            }
+
+            var handlerToUse = oldHandlerInfo;
+            if (i >= invalidateIndex || newHandlerInfo.shouldSupercede(oldHandlerInfo)) {
+              invalidateIndex = Math.min(i, invalidateIndex);
+              handlerToUse = newHandlerInfo;
+            }
+
+            if (isIntermediate && !checkingIfActive) {
+              handlerToUse = handlerToUse.becomeResolved(null, handlerToUse.context);
+            }
+
+            newState.handlerInfos.unshift(handlerToUse);
+          }
+
+          if (objects.length > 0) {
+            throw new Error("More context objects were passed than there are dynamic segments for the route: " + targetRouteName);
+          }
+
+          if (!isIntermediate) {
+            this.invalidateChildren(newState.handlerInfos, invalidateIndex);
+          }
+
+          merge(newState.queryParams, this.queryParams || {});
+
+          return newState;
+        },
+
+        invalidateChildren: function(handlerInfos, invalidateIndex) {
+          for (var i = invalidateIndex, l = handlerInfos.length; i < l; ++i) {
+            var handlerInfo = handlerInfos[i];
+            handlerInfos[i] = handlerInfos[i].getUnresolved();
+          }
+        },
+
+        getHandlerInfoForDynamicSegment: function(name, handler, names, objects, oldHandlerInfo, targetRouteName, i) {
+
+          var numNames = names.length;
+          var objectToUse;
+          if (objects.length > 0) {
+
+            // Use the objects provided for this transition.
+            objectToUse = objects[objects.length - 1];
+            if (isParam(objectToUse)) {
+              return this.createParamHandlerInfo(name, handler, names, objects, oldHandlerInfo);
+            } else {
+              objects.pop();
+            }
+          } else if (oldHandlerInfo && oldHandlerInfo.name === name) {
+            // Reuse the matching oldHandlerInfo
+            return oldHandlerInfo;
+          } else {
+            if (this.preTransitionState) {
+              var preTransitionHandlerInfo = this.preTransitionState.handlerInfos[i];
+              objectToUse = preTransitionHandlerInfo && preTransitionHandlerInfo.context;
+            } else {
+              // Ideally we should throw this error to provide maximal
+              // information to the user that not enough context objects
+              // were provided, but this proves too cumbersome in Ember
+              // in cases where inner template helpers are evaluated
+              // before parent helpers un-render, in which cases this
+              // error somewhat prematurely fires.
+              //throw new Error("Not enough context objects were provided to complete a transition to " + targetRouteName + ". Specifically, the " + name + " route needs an object that can be serialized into its dynamic URL segments [" + names.join(', ') + "]");
+              return oldHandlerInfo;
+            }
+          }
+
+          return handlerInfoFactory('object', {
+            name: name,
+            handler: handler,
+            context: objectToUse,
+            names: names
+          });
+        },
+
+        createParamHandlerInfo: function(name, handler, names, objects, oldHandlerInfo) {
+          var params = {};
+
+          // Soak up all the provided string/numbers
+          var numNames = names.length;
+          while (numNames--) {
+
+            // Only use old params if the names match with the new handler
+            var oldParams = (oldHandlerInfo && name === oldHandlerInfo.name && oldHandlerInfo.params) || {};
+
+            var peek = objects[objects.length - 1];
+            var paramName = names[numNames];
+            if (isParam(peek)) {
+              params[paramName] = "" + objects.pop();
+            } else {
+              // If we're here, this means only some of the params
+              // were string/number params, so try and use a param
+              // value from a previous handler.
+              if (oldParams.hasOwnProperty(paramName)) {
+                params[paramName] = oldParams[paramName];
+              } else {
+                throw new Error("You didn't provide enough string/numeric parameters to satisfy all of the dynamic segments for route " + name);
+              }
+            }
+          }
+
+          return handlerInfoFactory('param', {
+            name: name,
+            handler: handler,
+            params: params
+          });
+        }
       });
+    });
   enifed("router/transition-intent/url-transition-intent",
-      ["../transition-intent","../transition-state","../handler-info/factory","../utils","./../unrecognized-url-error","exports"],
-      function(__dependency1__, __dependency2__, __dependency3__, __dependency4__, __dependency5__, __exports__) {
-        "use strict";
-        var TransitionIntent = __dependency1__["default"];
-        var TransitionState = __dependency2__["default"];
-        var handlerInfoFactory = __dependency3__["default"];
-        var oCreate = __dependency4__.oCreate;
-        var merge = __dependency4__.merge;
-        var subclass = __dependency4__.subclass;
-        var UnrecognizedURLError = __dependency5__["default"];
+    ["../transition-intent","../transition-state","../handler-info/factory","../utils","./../unrecognized-url-error","exports"],
+    function(__dependency1__, __dependency2__, __dependency3__, __dependency4__, __dependency5__, __exports__) {
+      "use strict";
+      var TransitionIntent = __dependency1__["default"];
+      var TransitionState = __dependency2__["default"];
+      var handlerInfoFactory = __dependency3__["default"];
+      var oCreate = __dependency4__.oCreate;
+      var merge = __dependency4__.merge;
+      var subclass = __dependency4__.subclass;
+      var UnrecognizedURLError = __dependency5__["default"];
 
-        __exports__["default"] = subclass(TransitionIntent, {
-          url: null,
+      __exports__["default"] = subclass(TransitionIntent, {
+        url: null,
 
-          initialize: function(props) {
-            this.url = props.url;
-          },
+        initialize: function(props) {
+          this.url = props.url;
+        },
 
-          applyToState: function(oldState, recognizer, getHandler) {
-            var newState = new TransitionState();
+        applyToState: function(oldState, recognizer, getHandler) {
+          var newState = new TransitionState();
 
-            var results = recognizer.recognize(this.url),
-                queryParams = {},
-                i, len;
+          var results = recognizer.recognize(this.url),
+            queryParams = {},
+            i, len;
 
-            if (!results) {
+          if (!results) {
+            throw new UnrecognizedURLError(this.url);
+          }
+
+          var statesDiffer = false;
+
+          for (i = 0, len = results.length; i < len; ++i) {
+            var result = results[i];
+            var name = result.handler;
+            var handler = getHandler(name);
+
+            if (handler.inaccessibleByURL) {
               throw new UnrecognizedURLError(this.url);
             }
 
-            var statesDiffer = false;
+            var newHandlerInfo = handlerInfoFactory('param', {
+              name: name,
+              handler: handler,
+              params: result.params
+            });
 
-            for (i = 0, len = results.length; i < len; ++i) {
-              var result = results[i];
-              var name = result.handler;
-              var handler = getHandler(name);
+            var oldHandlerInfo = oldState.handlerInfos[i];
+            if (statesDiffer || newHandlerInfo.shouldSupercede(oldHandlerInfo)) {
+              statesDiffer = true;
+              newState.handlerInfos[i] = newHandlerInfo;
+            } else {
+              newState.handlerInfos[i] = oldHandlerInfo;
+            }
+          }
 
-              if (handler.inaccessibleByURL) {
-                throw new UnrecognizedURLError(this.url);
-              }
+          merge(newState.queryParams, results.queryParams);
 
-              var newHandlerInfo = handlerInfoFactory('param', {
-                name: name,
-                handler: handler,
-                params: result.params
-              });
+          return newState;
+        }
+      });
+    });
+  enifed("router/transition-state",
+    ["./handler-info","./utils","rsvp/promise","exports"],
+    function(__dependency1__, __dependency2__, __dependency3__, __exports__) {
+      "use strict";
+      var ResolvedHandlerInfo = __dependency1__.ResolvedHandlerInfo;
+      var forEach = __dependency2__.forEach;
+      var promiseLabel = __dependency2__.promiseLabel;
+      var callHook = __dependency2__.callHook;
+      var Promise = __dependency3__["default"];
 
-              var oldHandlerInfo = oldState.handlerInfos[i];
-              if (statesDiffer || newHandlerInfo.shouldSupercede(oldHandlerInfo)) {
-                statesDiffer = true;
-                newState.handlerInfos[i] = newHandlerInfo;
-              } else {
-                newState.handlerInfos[i] = oldHandlerInfo;
-              }
+      function TransitionState(other) {
+        this.handlerInfos = [];
+        this.queryParams = {};
+        this.params = {};
+      }
+
+      TransitionState.prototype = {
+        handlerInfos: null,
+        queryParams: null,
+        params: null,
+
+        promiseLabel: function(label) {
+          var targetName = '';
+          forEach(this.handlerInfos, function(handlerInfo) {
+            if (targetName !== '') {
+              targetName += '.';
+            }
+            targetName += handlerInfo.name;
+          });
+          return promiseLabel("'" + targetName + "': " + label);
+        },
+
+        resolve: function(shouldContinue, payload) {
+          var self = this;
+          // First, calculate params for this state. This is useful
+          // information to provide to the various route hooks.
+          var params = this.params;
+          forEach(this.handlerInfos, function(handlerInfo) {
+            params[handlerInfo.name] = handlerInfo.params || {};
+          });
+
+          payload = payload || {};
+          payload.resolveIndex = 0;
+
+          var currentState = this;
+          var wasAborted = false;
+
+          // The prelude RSVP.resolve() asyncs us into the promise land.
+          return Promise.resolve(null, this.promiseLabel("Start transition"))
+            .then(resolveOneHandlerInfo, null, this.promiseLabel('Resolve handler'))['catch'](handleError, this.promiseLabel('Handle error'));
+
+          function innerShouldContinue() {
+            return Promise.resolve(shouldContinue(), currentState.promiseLabel("Check if should continue"))['catch'](function(reason) {
+              // We distinguish between errors that occurred
+              // during resolution (e.g. beforeModel/model/afterModel),
+              // and aborts due to a rejecting promise from shouldContinue().
+              wasAborted = true;
+              return Promise.reject(reason);
+            }, currentState.promiseLabel("Handle abort"));
+          }
+
+          function handleError(error) {
+            // This is the only possible
+            // reject value of TransitionState#resolve
+            var handlerInfos = currentState.handlerInfos;
+            var errorHandlerIndex = payload.resolveIndex >= handlerInfos.length ?
+            handlerInfos.length - 1 : payload.resolveIndex;
+            return Promise.reject({
+              error: error,
+              handlerWithError: currentState.handlerInfos[errorHandlerIndex].handler,
+              wasAborted: wasAborted,
+              state: currentState
+            });
+          }
+
+          function proceed(resolvedHandlerInfo) {
+            var wasAlreadyResolved = currentState.handlerInfos[payload.resolveIndex].isResolved;
+
+            // Swap the previously unresolved handlerInfo with
+            // the resolved handlerInfo
+            currentState.handlerInfos[payload.resolveIndex++] = resolvedHandlerInfo;
+
+            if (!wasAlreadyResolved) {
+              // Call the redirect hook. The reason we call it here
+              // vs. afterModel is so that redirects into child
+              // routes don't re-run the model hooks for this
+              // already-resolved route.
+              var handler = resolvedHandlerInfo.handler;
+              callHook(handler, 'redirect', resolvedHandlerInfo.context, payload);
             }
 
-            merge(newState.queryParams, results.queryParams);
-
-            return newState;
+            // Proceed after ensuring that the redirect hook
+            // didn't abort this transition by transitioning elsewhere.
+            return innerShouldContinue().then(resolveOneHandlerInfo, null, currentState.promiseLabel('Resolve handler'));
           }
-        });
-      });
-  enifed("router/transition-state",
-      ["./handler-info","./utils","rsvp/promise","exports"],
-      function(__dependency1__, __dependency2__, __dependency3__, __exports__) {
-        "use strict";
-        var ResolvedHandlerInfo = __dependency1__.ResolvedHandlerInfo;
-        var forEach = __dependency2__.forEach;
-        var promiseLabel = __dependency2__.promiseLabel;
-        var callHook = __dependency2__.callHook;
-        var Promise = __dependency3__["default"];
 
-        function TransitionState(other) {
-          this.handlerInfos = [];
-          this.queryParams = {};
+          function resolveOneHandlerInfo() {
+            if (payload.resolveIndex === currentState.handlerInfos.length) {
+              // This is is the only possible
+              // fulfill value of TransitionState#resolve
+              return {
+                error: null,
+                state: currentState
+              };
+            }
+
+            var handlerInfo = currentState.handlerInfos[payload.resolveIndex];
+
+            return handlerInfo.resolve(innerShouldContinue, payload)
+              .then(proceed, null, currentState.promiseLabel('Proceed'));
+          }
+        }
+      };
+
+      __exports__["default"] = TransitionState;
+    });
+  enifed("router/transition",
+    ["rsvp/promise","./handler-info","./utils","exports"],
+    function(__dependency1__, __dependency2__, __dependency3__, __exports__) {
+      "use strict";
+      var Promise = __dependency1__["default"];
+      var ResolvedHandlerInfo = __dependency2__.ResolvedHandlerInfo;
+      var trigger = __dependency3__.trigger;
+      var slice = __dependency3__.slice;
+      var log = __dependency3__.log;
+      var promiseLabel = __dependency3__.promiseLabel;
+
+      /**
+       @private
+
+       A Transition is a thennable (a promise-like object) that represents
+       an attempt to transition to another route. It can be aborted, either
+       explicitly via `abort` or by attempting another transition while a
+       previous one is still underway. An aborted transition can also
+       be `retry()`d later.
+       */
+      function Transition(router, intent, state, error) {
+        var transition = this;
+        this.state = state || router.state;
+        this.intent = intent;
+        this.router = router;
+        this.data = this.intent && this.intent.data || {};
+        this.resolvedModels = {};
+        this.queryParams = {};
+
+        if (error) {
+          this.promise = Promise.reject(error);
+          this.error = error;
+          return;
+        }
+
+        if (state) {
+          this.params = state.params;
+          this.queryParams = state.queryParams;
+          this.handlerInfos = state.handlerInfos;
+
+          var len = state.handlerInfos.length;
+          if (len) {
+            this.targetName = state.handlerInfos[len-1].name;
+          }
+
+          for (var i = 0; i < len; ++i) {
+            var handlerInfo = state.handlerInfos[i];
+
+            // TODO: this all seems hacky
+            if (!handlerInfo.isResolved) { break; }
+            this.pivotHandler = handlerInfo.handler;
+          }
+
+          this.sequence = Transition.currentSequence++;
+          this.promise = state.resolve(checkForAbort, this)['catch'](function(result) {
+            if (result.wasAborted || transition.isAborted) {
+              return Promise.reject(logAbort(transition));
+            } else {
+              transition.trigger('error', result.error, transition, result.handlerWithError);
+              transition.abort();
+              return Promise.reject(result.error);
+            }
+          }, promiseLabel('Handle Abort'));
+        } else {
+          this.promise = Promise.resolve(this.state);
           this.params = {};
         }
 
-        TransitionState.prototype = {
-          handlerInfos: null,
-          queryParams: null,
-          params: null,
+        function checkForAbort() {
+          if (transition.isAborted) {
+            return Promise.reject(undefined, promiseLabel("Transition aborted - reject"));
+          }
+        }
+      }
 
-          promiseLabel: function(label) {
-            var targetName = '';
-            forEach(this.handlerInfos, function(handlerInfo) {
-              if (targetName !== '') {
-                targetName += '.';
-              }
-              targetName += handlerInfo.name;
-            });
-            return promiseLabel("'" + targetName + "': " + label);
-          },
+      Transition.currentSequence = 0;
 
-          resolve: function(shouldContinue, payload) {
-            var self = this;
-            // First, calculate params for this state. This is useful
-            // information to provide to the various route hooks.
-            var params = this.params;
-            forEach(this.handlerInfos, function(handlerInfo) {
-              params[handlerInfo.name] = handlerInfo.params || {};
-            });
+      Transition.prototype = {
+        targetName: null,
+        urlMethod: 'update',
+        intent: null,
+        params: null,
+        pivotHandler: null,
+        resolveIndex: 0,
+        handlerInfos: null,
+        resolvedModels: null,
+        isActive: true,
+        state: null,
+        queryParamsOnly: false,
 
-            payload = payload || {};
-            payload.resolveIndex = 0;
+        isTransition: true,
 
-            var currentState = this;
-            var wasAborted = false;
-
-            // The prelude RSVP.resolve() asyncs us into the promise land.
-            return Promise.resolve(null, this.promiseLabel("Start transition"))
-                .then(resolveOneHandlerInfo, null, this.promiseLabel('Resolve handler'))['catch'](handleError, this.promiseLabel('Handle error'));
-
-            function innerShouldContinue() {
-              return Promise.resolve(shouldContinue(), currentState.promiseLabel("Check if should continue"))['catch'](function(reason) {
-                // We distinguish between errors that occurred
-                // during resolution (e.g. beforeModel/model/afterModel),
-                // and aborts due to a rejecting promise from shouldContinue().
-                wasAborted = true;
-                return Promise.reject(reason);
-              }, currentState.promiseLabel("Handle abort"));
-            }
-
-            function handleError(error) {
-              // This is the only possible
-              // reject value of TransitionState#resolve
-              var handlerInfos = currentState.handlerInfos;
-              var errorHandlerIndex = payload.resolveIndex >= handlerInfos.length ?
-              handlerInfos.length - 1 : payload.resolveIndex;
-              return Promise.reject({
-                error: error,
-                handlerWithError: currentState.handlerInfos[errorHandlerIndex].handler,
-                wasAborted: wasAborted,
-                state: currentState
-              });
-            }
-
-            function proceed(resolvedHandlerInfo) {
-              var wasAlreadyResolved = currentState.handlerInfos[payload.resolveIndex].isResolved;
-
-              // Swap the previously unresolved handlerInfo with
-              // the resolved handlerInfo
-              currentState.handlerInfos[payload.resolveIndex++] = resolvedHandlerInfo;
-
-              if (!wasAlreadyResolved) {
-                // Call the redirect hook. The reason we call it here
-                // vs. afterModel is so that redirects into child
-                // routes don't re-run the model hooks for this
-                // already-resolved route.
-                var handler = resolvedHandlerInfo.handler;
-                callHook(handler, 'redirect', resolvedHandlerInfo.context, payload);
-              }
-
-              // Proceed after ensuring that the redirect hook
-              // didn't abort this transition by transitioning elsewhere.
-              return innerShouldContinue().then(resolveOneHandlerInfo, null, currentState.promiseLabel('Resolve handler'));
-            }
-
-            function resolveOneHandlerInfo() {
-              if (payload.resolveIndex === currentState.handlerInfos.length) {
-                // This is is the only possible
-                // fulfill value of TransitionState#resolve
-                return {
-                  error: null,
-                  state: currentState
-                };
-              }
-
-              var handlerInfo = currentState.handlerInfos[payload.resolveIndex];
-
-              return handlerInfo.resolve(innerShouldContinue, payload)
-                  .then(proceed, null, currentState.promiseLabel('Proceed'));
+        isExiting: function(handler) {
+          var handlerInfos = this.handlerInfos;
+          for (var i = 0, len = handlerInfos.length; i < len; ++i) {
+            var handlerInfo = handlerInfos[i];
+            if (handlerInfo.name === handler || handlerInfo.handler === handler) {
+              return false;
             }
           }
-        };
-
-        __exports__["default"] = TransitionState;
-      });
-  enifed("router/transition",
-      ["rsvp/promise","./handler-info","./utils","exports"],
-      function(__dependency1__, __dependency2__, __dependency3__, __exports__) {
-        "use strict";
-        var Promise = __dependency1__["default"];
-        var ResolvedHandlerInfo = __dependency2__.ResolvedHandlerInfo;
-        var trigger = __dependency3__.trigger;
-        var slice = __dependency3__.slice;
-        var log = __dependency3__.log;
-        var promiseLabel = __dependency3__.promiseLabel;
+          return true;
+        },
 
         /**
-         @private
+         @public
 
-         A Transition is a thennable (a promise-like object) that represents
-         an attempt to transition to another route. It can be aborted, either
-         explicitly via `abort` or by attempting another transition while a
-         previous one is still underway. An aborted transition can also
-         be `retry()`d later.
+         The Transition's internal promise. Calling `.then` on this property
+         is that same as calling `.then` on the Transition object itself, but
+         this property is exposed for when you want to pass around a
+         Transition's promise, but not the Transition object itself, since
+         Transition object can be externally `abort`ed, while the promise
+         cannot.
          */
-        function Transition(router, intent, state, error) {
-          var transition = this;
-          this.state = state || router.state;
-          this.intent = intent;
-          this.router = router;
-          this.data = this.intent && this.intent.data || {};
-          this.resolvedModels = {};
-          this.queryParams = {};
+        promise: null,
 
-          if (error) {
-            this.promise = Promise.reject(error);
-            this.error = error;
-            return;
-          }
+        /**
+         @public
 
-          if (state) {
-            this.params = state.params;
-            this.queryParams = state.queryParams;
-            this.handlerInfos = state.handlerInfos;
+         Custom state can be stored on a Transition's `data` object.
+         This can be useful for decorating a Transition within an earlier
+         hook and shared with a later hook. Properties set on `data` will
+         be copied to new transitions generated by calling `retry` on this
+         transition.
+         */
+        data: null,
 
-            var len = state.handlerInfos.length;
-            if (len) {
-              this.targetName = state.handlerInfos[len-1].name;
-            }
+        /**
+         @public
 
-            for (var i = 0; i < len; ++i) {
-              var handlerInfo = state.handlerInfos[i];
+         A standard promise hook that resolves if the transition
+         succeeds and rejects if it fails/redirects/aborts.
 
-              // TODO: this all seems hacky
-              if (!handlerInfo.isResolved) { break; }
-              this.pivotHandler = handlerInfo.handler;
-            }
+         Forwards to the internal `promise` property which you can
+         use in situations where you want to pass around a thennable,
+         but not the Transition itself.
 
-            this.sequence = Transition.currentSequence++;
-            this.promise = state.resolve(checkForAbort, this)['catch'](function(result) {
-              if (result.wasAborted || transition.isAborted) {
-                return Promise.reject(logAbort(transition));
-              } else {
-                transition.trigger('error', result.error, transition, result.handlerWithError);
-                transition.abort();
-                return Promise.reject(result.error);
-              }
-            }, promiseLabel('Handle Abort'));
+         @param {Function} onFulfilled
+         @param {Function} onRejected
+         @param {String} label optional string for labeling the promise.
+         Useful for tooling.
+         @return {Promise}
+         */
+        then: function(onFulfilled, onRejected, label) {
+          return this.promise.then(onFulfilled, onRejected, label);
+        },
+
+        /**
+         @public
+
+         Forwards to the internal `promise` property which you can
+         use in situations where you want to pass around a thennable,
+         but not the Transition itself.
+
+         @method catch
+         @param {Function} onRejection
+         @param {String} label optional string for labeling the promise.
+         Useful for tooling.
+         @return {Promise}
+         */
+        "catch": function(onRejection, label) {
+          return this.promise["catch"](onRejection, label);
+        },
+
+        /**
+         @public
+
+         Forwards to the internal `promise` property which you can
+         use in situations where you want to pass around a thennable,
+         but not the Transition itself.
+
+         @method finally
+         @param {Function} callback
+         @param {String} label optional string for labeling the promise.
+         Useful for tooling.
+         @return {Promise}
+         */
+        "finally": function(callback, label) {
+          return this.promise["finally"](callback, label);
+        },
+
+        /**
+         @public
+
+         Aborts the Transition. Note you can also implicitly abort a transition
+         by initiating another transition while a previous one is underway.
+         */
+        abort: function() {
+          if (this.isAborted) { return this; }
+          log(this.router, this.sequence, this.targetName + ": transition was aborted");
+          this.intent.preTransitionState = this.router.state;
+          this.isAborted = true;
+          this.isActive = false;
+          this.router.activeTransition = null;
+          return this;
+        },
+
+        /**
+         @public
+
+         Retries a previously-aborted transition (making sure to abort the
+         transition if it's still active). Returns a new transition that
+         represents the new attempt to transition.
+         */
+        retry: function() {
+          // TODO: add tests for merged state retry()s
+          this.abort();
+          return this.router.transitionByIntent(this.intent, false);
+        },
+
+        /**
+         @public
+
+         Sets the URL-changing method to be employed at the end of a
+         successful transition. By default, a new Transition will just
+         use `updateURL`, but passing 'replace' to this method will
+         cause the URL to update using 'replaceWith' instead. Omitting
+         a parameter will disable the URL change, allowing for transitions
+         that don't update the URL at completion (this is also used for
+         handleURL, since the URL has already changed before the
+         transition took place).
+
+         @param {String} method the type of URL-changing method to use
+         at the end of a transition. Accepted values are 'replace',
+         falsy values, or any other non-falsy value (which is
+         interpreted as an updateURL transition).
+
+         @return {Transition} this transition
+         */
+        method: function(method) {
+          this.urlMethod = method;
+          return this;
+        },
+
+        /**
+         @public
+
+         Fires an event on the current list of resolved/resolving
+         handlers within this transition. Useful for firing events
+         on route hierarchies that haven't fully been entered yet.
+
+         Note: This method is also aliased as `send`
+
+         @param {Boolean} [ignoreFailure=false] a boolean specifying whether unhandled events throw an error
+         @param {String} name the name of the event to fire
+         */
+        trigger: function (ignoreFailure) {
+          var args = slice.call(arguments);
+          if (typeof ignoreFailure === 'boolean') {
+            args.shift();
           } else {
-            this.promise = Promise.resolve(this.state);
-            this.params = {};
+            // Throw errors on unhandled trigger events by default
+            ignoreFailure = false;
           }
+          trigger(this.router, this.state.handlerInfos.slice(0, this.resolveIndex + 1), ignoreFailure, args);
+        },
 
-          function checkForAbort() {
-            if (transition.isAborted) {
-              return Promise.reject(undefined, promiseLabel("Transition aborted - reject"));
+        /**
+         @public
+
+         Transitions are aborted and their promises rejected
+         when redirects occur; this method returns a promise
+         that will follow any redirects that occur and fulfill
+         with the value fulfilled by any redirecting transitions
+         that occur.
+
+         @return {Promise} a promise that fulfills with the same
+         value that the final redirecting transition fulfills with
+         */
+        followRedirects: function() {
+          var router = this.router;
+          return this.promise['catch'](function(reason) {
+            if (router.activeTransition) {
+              return router.activeTransition.followRedirects();
             }
-          }
-        }
+            return Promise.reject(reason);
+          });
+        },
 
-        Transition.currentSequence = 0;
-
-        Transition.prototype = {
-          targetName: null,
-          urlMethod: 'update',
-          intent: null,
-          params: null,
-          pivotHandler: null,
-          resolveIndex: 0,
-          handlerInfos: null,
-          resolvedModels: null,
-          isActive: true,
-          state: null,
-          queryParamsOnly: false,
-
-          isTransition: true,
-
-          isExiting: function(handler) {
-            var handlerInfos = this.handlerInfos;
-            for (var i = 0, len = handlerInfos.length; i < len; ++i) {
-              var handlerInfo = handlerInfos[i];
-              if (handlerInfo.name === handler || handlerInfo.handler === handler) {
-                return false;
-              }
-            }
-            return true;
-          },
-
-          /**
-           @public
-
-           The Transition's internal promise. Calling `.then` on this property
-           is that same as calling `.then` on the Transition object itself, but
-           this property is exposed for when you want to pass around a
-           Transition's promise, but not the Transition object itself, since
-           Transition object can be externally `abort`ed, while the promise
-           cannot.
-           */
-          promise: null,
-
-          /**
-           @public
-
-           Custom state can be stored on a Transition's `data` object.
-           This can be useful for decorating a Transition within an earlier
-           hook and shared with a later hook. Properties set on `data` will
-           be copied to new transitions generated by calling `retry` on this
-           transition.
-           */
-          data: null,
-
-          /**
-           @public
-
-           A standard promise hook that resolves if the transition
-           succeeds and rejects if it fails/redirects/aborts.
-
-           Forwards to the internal `promise` property which you can
-           use in situations where you want to pass around a thennable,
-           but not the Transition itself.
-
-           @param {Function} onFulfilled
-           @param {Function} onRejected
-           @param {String} label optional string for labeling the promise.
-           Useful for tooling.
-           @return {Promise}
-           */
-          then: function(onFulfilled, onRejected, label) {
-            return this.promise.then(onFulfilled, onRejected, label);
-          },
-
-          /**
-           @public
-
-           Forwards to the internal `promise` property which you can
-           use in situations where you want to pass around a thennable,
-           but not the Transition itself.
-
-           @method catch
-           @param {Function} onRejection
-           @param {String} label optional string for labeling the promise.
-           Useful for tooling.
-           @return {Promise}
-           */
-          "catch": function(onRejection, label) {
-            return this.promise["catch"](onRejection, label);
-          },
-
-          /**
-           @public
-
-           Forwards to the internal `promise` property which you can
-           use in situations where you want to pass around a thennable,
-           but not the Transition itself.
-
-           @method finally
-           @param {Function} callback
-           @param {String} label optional string for labeling the promise.
-           Useful for tooling.
-           @return {Promise}
-           */
-          "finally": function(callback, label) {
-            return this.promise["finally"](callback, label);
-          },
-
-          /**
-           @public
-
-           Aborts the Transition. Note you can also implicitly abort a transition
-           by initiating another transition while a previous one is underway.
-           */
-          abort: function() {
-            if (this.isAborted) { return this; }
-            log(this.router, this.sequence, this.targetName + ": transition was aborted");
-            this.intent.preTransitionState = this.router.state;
-            this.isAborted = true;
-            this.isActive = false;
-            this.router.activeTransition = null;
-            return this;
-          },
-
-          /**
-           @public
-
-           Retries a previously-aborted transition (making sure to abort the
-           transition if it's still active). Returns a new transition that
-           represents the new attempt to transition.
-           */
-          retry: function() {
-            // TODO: add tests for merged state retry()s
-            this.abort();
-            return this.router.transitionByIntent(this.intent, false);
-          },
-
-          /**
-           @public
-
-           Sets the URL-changing method to be employed at the end of a
-           successful transition. By default, a new Transition will just
-           use `updateURL`, but passing 'replace' to this method will
-           cause the URL to update using 'replaceWith' instead. Omitting
-           a parameter will disable the URL change, allowing for transitions
-           that don't update the URL at completion (this is also used for
-           handleURL, since the URL has already changed before the
-           transition took place).
-
-           @param {String} method the type of URL-changing method to use
-           at the end of a transition. Accepted values are 'replace',
-           falsy values, or any other non-falsy value (which is
-           interpreted as an updateURL transition).
-
-           @return {Transition} this transition
-           */
-          method: function(method) {
-            this.urlMethod = method;
-            return this;
-          },
-
-          /**
-           @public
-
-           Fires an event on the current list of resolved/resolving
-           handlers within this transition. Useful for firing events
-           on route hierarchies that haven't fully been entered yet.
-
-           Note: This method is also aliased as `send`
-
-           @param {Boolean} [ignoreFailure=false] a boolean specifying whether unhandled events throw an error
-           @param {String} name the name of the event to fire
-           */
-          trigger: function (ignoreFailure) {
-            var args = slice.call(arguments);
-            if (typeof ignoreFailure === 'boolean') {
-              args.shift();
-            } else {
-              // Throw errors on unhandled trigger events by default
-              ignoreFailure = false;
-            }
-            trigger(this.router, this.state.handlerInfos.slice(0, this.resolveIndex + 1), ignoreFailure, args);
-          },
-
-          /**
-           @public
-
-           Transitions are aborted and their promises rejected
-           when redirects occur; this method returns a promise
-           that will follow any redirects that occur and fulfill
-           with the value fulfilled by any redirecting transitions
-           that occur.
-
-           @return {Promise} a promise that fulfills with the same
-           value that the final redirecting transition fulfills with
-           */
-          followRedirects: function() {
-            var router = this.router;
-            return this.promise['catch'](function(reason) {
-              if (router.activeTransition) {
-                return router.activeTransition.followRedirects();
-              }
-              return Promise.reject(reason);
-            });
-          },
-
-          toString: function() {
-            return "Transition (sequence " + this.sequence + ")";
-          },
-
-          /**
-           @private
-           */
-          log: function(message) {
-            log(this.router, this.sequence, message);
-          }
-        };
-
-        // Alias 'trigger' as 'send'
-        Transition.prototype.send = Transition.prototype.trigger;
+        toString: function() {
+          return "Transition (sequence " + this.sequence + ")";
+        },
 
         /**
          @private
-
-         Logs and returns a TransitionAborted error.
          */
-        function logAbort(transition) {
-          log(transition.router, transition.sequence, "detected abort.");
-          return new TransitionAborted();
+        log: function(message) {
+          log(this.router, this.sequence, message);
         }
+      };
 
-        function TransitionAborted(message) {
-          this.message = (message || "TransitionAborted");
-          this.name = "TransitionAborted";
-        }
+      // Alias 'trigger' as 'send'
+      Transition.prototype.send = Transition.prototype.trigger;
 
-        __exports__.Transition = Transition;
-        __exports__.logAbort = logAbort;
-        __exports__.TransitionAborted = TransitionAborted;
-      });
+      /**
+       @private
+
+       Logs and returns a TransitionAborted error.
+       */
+      function logAbort(transition) {
+        log(transition.router, transition.sequence, "detected abort.");
+        return new TransitionAborted();
+      }
+
+      function TransitionAborted(message) {
+        this.message = (message || "TransitionAborted");
+        this.name = "TransitionAborted";
+      }
+
+      __exports__.Transition = Transition;
+      __exports__.logAbort = logAbort;
+      __exports__.TransitionAborted = TransitionAborted;
+    });
   enifed("router/unrecognized-url-error",
-      ["./utils","exports"],
-      function(__dependency1__, __exports__) {
-        "use strict";
-        var oCreate = __dependency1__.oCreate;
+    ["./utils","exports"],
+    function(__dependency1__, __exports__) {
+      "use strict";
+      var oCreate = __dependency1__.oCreate;
 
-        /**
-         Promise reject reasons passed to promise rejection
-         handlers for failed transitions.
-         */
-        function UnrecognizedURLError(message) {
-          this.message = (message || "UnrecognizedURLError");
-          this.name = "UnrecognizedURLError";
-          Error.call(this);
-        }
+      /**
+       Promise reject reasons passed to promise rejection
+       handlers for failed transitions.
+       */
+      function UnrecognizedURLError(message) {
+        this.message = (message || "UnrecognizedURLError");
+        this.name = "UnrecognizedURLError";
+        Error.call(this);
+      }
 
-        UnrecognizedURLError.prototype = oCreate(Error.prototype);
+      UnrecognizedURLError.prototype = oCreate(Error.prototype);
 
-        __exports__["default"] = UnrecognizedURLError;
-      });
+      __exports__["default"] = UnrecognizedURLError;
+    });
   enifed("router/utils",
-      ["exports"],
-      function(__exports__) {
-        "use strict";
-        var slice = Array.prototype.slice;
+    ["exports"],
+    function(__exports__) {
+      "use strict";
+      var slice = Array.prototype.slice;
 
-        var _isArray;
-        if (!Array.isArray) {
-          _isArray = function (x) {
-            return Object.prototype.toString.call(x) === "[object Array]";
-          };
+      var _isArray;
+      if (!Array.isArray) {
+        _isArray = function (x) {
+          return Object.prototype.toString.call(x) === "[object Array]";
+        };
+      } else {
+        _isArray = Array.isArray;
+      }
+
+      var isArray = _isArray;
+      __exports__.isArray = isArray;
+      function merge(hash, other) {
+        for (var prop in other) {
+          if (other.hasOwnProperty(prop)) { hash[prop] = other[prop]; }
+        }
+      }
+
+      var oCreate = Object.create || function(proto) {
+          function F() {}
+          F.prototype = proto;
+          return new F();
+        };
+      __exports__.oCreate = oCreate;
+      /**
+       @private
+
+       Extracts query params from the end of an array
+       **/
+      function extractQueryParams(array) {
+        var len = (array && array.length), head, queryParams;
+
+        if(len && len > 0 && array[len - 1] && array[len - 1].hasOwnProperty('queryParams')) {
+          queryParams = array[len - 1].queryParams;
+          head = slice.call(array, 0, len - 1);
+          return [head, queryParams];
         } else {
-          _isArray = Array.isArray;
+          return [array, null];
         }
+      }
 
-        var isArray = _isArray;
-        __exports__.isArray = isArray;
-        function merge(hash, other) {
-          for (var prop in other) {
-            if (other.hasOwnProperty(prop)) { hash[prop] = other[prop]; }
-          }
-        }
+      __exports__.extractQueryParams = extractQueryParams;/**
+       @private
 
-        var oCreate = Object.create || function(proto) {
-              function F() {}
-              F.prototype = proto;
-              return new F();
-            };
-        __exports__.oCreate = oCreate;
-        /**
-         @private
-
-         Extracts query params from the end of an array
-         **/
-        function extractQueryParams(array) {
-          var len = (array && array.length), head, queryParams;
-
-          if(len && len > 0 && array[len - 1] && array[len - 1].hasOwnProperty('queryParams')) {
-            queryParams = array[len - 1].queryParams;
-            head = slice.call(array, 0, len - 1);
-            return [head, queryParams];
-          } else {
-            return [array, null];
-          }
-        }
-
-        __exports__.extractQueryParams = extractQueryParams;/**
-         @private
-
-         Coerces query param properties and array elements into strings.
-         **/
-        function coerceQueryParamsToString(queryParams) {
-          for (var key in queryParams) {
-            if (typeof queryParams[key] === 'number') {
-              queryParams[key] = '' + queryParams[key];
-            } else if (isArray(queryParams[key])) {
-              for (var i = 0, l = queryParams[key].length; i < l; i++) {
-                queryParams[key][i] = '' + queryParams[key][i];
-              }
+       Coerces query param properties and array elements into strings.
+       **/
+      function coerceQueryParamsToString(queryParams) {
+        for (var key in queryParams) {
+          if (typeof queryParams[key] === 'number') {
+            queryParams[key] = '' + queryParams[key];
+          } else if (isArray(queryParams[key])) {
+            for (var i = 0, l = queryParams[key].length; i < l; i++) {
+              queryParams[key][i] = '' + queryParams[key][i];
             }
           }
         }
-        /**
-         @private
-         */
-        function log(router, sequence, msg) {
-          if (!router.log) { return; }
+      }
+      /**
+       @private
+       */
+      function log(router, sequence, msg) {
+        if (!router.log) { return; }
 
-          if (arguments.length === 3) {
-            router.log("Transition #" + sequence + ": " + msg);
-          } else {
-            msg = sequence;
-            router.log(msg);
-          }
+        if (arguments.length === 3) {
+          router.log("Transition #" + sequence + ": " + msg);
+        } else {
+          msg = sequence;
+          router.log(msg);
+        }
+      }
+
+      __exports__.log = log;function bind(context, fn) {
+        var boundArgs = arguments;
+        return function(value) {
+          var args = slice.call(boundArgs, 2);
+          args.push(value);
+          return fn.apply(context, args);
+        };
+      }
+
+      __exports__.bind = bind;function isParam(object) {
+        return (typeof object === "string" || object instanceof String || typeof object === "number" || object instanceof Number);
+      }
+
+
+      function forEach(array, callback) {
+        for (var i=0, l=array.length; i<l && false !== callback(array[i]); i++) { }
+      }
+
+      __exports__.forEach = forEach;function trigger(router, handlerInfos, ignoreFailure, args) {
+        if (router.triggerEvent) {
+          router.triggerEvent(handlerInfos, ignoreFailure, args);
+          return;
         }
 
-        __exports__.log = log;function bind(context, fn) {
-          var boundArgs = arguments;
-          return function(value) {
-            var args = slice.call(boundArgs, 2);
-            args.push(value);
-            return fn.apply(context, args);
-          };
+        var name = args.shift();
+
+        if (!handlerInfos) {
+          if (ignoreFailure) { return; }
+          throw new Error("Could not trigger event '" + name + "'. There are no active handlers");
         }
 
-        __exports__.bind = bind;function isParam(object) {
-          return (typeof object === "string" || object instanceof String || typeof object === "number" || object instanceof Number);
-        }
+        var eventWasHandled = false;
 
+        for (var i=handlerInfos.length-1; i>=0; i--) {
+          var handlerInfo = handlerInfos[i],
+            handler = handlerInfo.handler;
 
-        function forEach(array, callback) {
-          for (var i=0, l=array.length; i<l && false !== callback(array[i]); i++) { }
-        }
-
-        __exports__.forEach = forEach;function trigger(router, handlerInfos, ignoreFailure, args) {
-          if (router.triggerEvent) {
-            router.triggerEvent(handlerInfos, ignoreFailure, args);
-            return;
-          }
-
-          var name = args.shift();
-
-          if (!handlerInfos) {
-            if (ignoreFailure) { return; }
-            throw new Error("Could not trigger event '" + name + "'. There are no active handlers");
-          }
-
-          var eventWasHandled = false;
-
-          for (var i=handlerInfos.length-1; i>=0; i--) {
-            var handlerInfo = handlerInfos[i],
-                handler = handlerInfo.handler;
-
-            if (handler.events && handler.events[name]) {
-              if (handler.events[name].apply(handler, args) === true) {
-                eventWasHandled = true;
-              } else {
-                return;
-              }
+          if (handler.events && handler.events[name]) {
+            if (handler.events[name].apply(handler, args) === true) {
+              eventWasHandled = true;
+            } else {
+              return;
             }
           }
+        }
 
-          if (!eventWasHandled && !ignoreFailure) {
-            throw new Error("Nothing handled the event '" + name + "'.");
+        if (!eventWasHandled && !ignoreFailure) {
+          throw new Error("Nothing handled the event '" + name + "'.");
+        }
+      }
+
+      __exports__.trigger = trigger;function getChangelist(oldObject, newObject) {
+        var key;
+        var results = {
+          all: {},
+          changed: {},
+          removed: {}
+        };
+
+        merge(results.all, newObject);
+
+        var didChange = false;
+        coerceQueryParamsToString(oldObject);
+        coerceQueryParamsToString(newObject);
+
+        // Calculate removals
+        for (key in oldObject) {
+          if (oldObject.hasOwnProperty(key)) {
+            if (!newObject.hasOwnProperty(key)) {
+              didChange = true;
+              results.removed[key] = oldObject[key];
+            }
           }
         }
 
-        __exports__.trigger = trigger;function getChangelist(oldObject, newObject) {
-          var key;
-          var results = {
-            all: {},
-            changed: {},
-            removed: {}
-          };
-
-          merge(results.all, newObject);
-
-          var didChange = false;
-          coerceQueryParamsToString(oldObject);
-          coerceQueryParamsToString(newObject);
-
-          // Calculate removals
-          for (key in oldObject) {
-            if (oldObject.hasOwnProperty(key)) {
-              if (!newObject.hasOwnProperty(key)) {
+        // Calculate changes
+        for (key in newObject) {
+          if (newObject.hasOwnProperty(key)) {
+            if (isArray(oldObject[key]) && isArray(newObject[key])) {
+              if (oldObject[key].length !== newObject[key].length) {
+                results.changed[key] = newObject[key];
                 didChange = true;
-                results.removed[key] = oldObject[key];
-              }
-            }
-          }
-
-          // Calculate changes
-          for (key in newObject) {
-            if (newObject.hasOwnProperty(key)) {
-              if (isArray(oldObject[key]) && isArray(newObject[key])) {
-                if (oldObject[key].length !== newObject[key].length) {
-                  results.changed[key] = newObject[key];
-                  didChange = true;
-                } else {
-                  for (var i = 0, l = oldObject[key].length; i < l; i++) {
-                    if (oldObject[key][i] !== newObject[key][i]) {
-                      results.changed[key] = newObject[key];
-                      didChange = true;
-                    }
+              } else {
+                for (var i = 0, l = oldObject[key].length; i < l; i++) {
+                  if (oldObject[key][i] !== newObject[key][i]) {
+                    results.changed[key] = newObject[key];
+                    didChange = true;
                   }
                 }
               }
-              else {
-                if (oldObject[key] !== newObject[key]) {
-                  results.changed[key] = newObject[key];
-                  didChange = true;
-                }
+            }
+            else {
+              if (oldObject[key] !== newObject[key]) {
+                results.changed[key] = newObject[key];
+                didChange = true;
               }
             }
           }
-
-          return didChange && results;
         }
 
-        __exports__.getChangelist = getChangelist;function promiseLabel(label) {
-          return 'Router: ' + label;
-        }
+        return didChange && results;
+      }
 
-        __exports__.promiseLabel = promiseLabel;function subclass(parentConstructor, proto) {
-          function C(props) {
-            parentConstructor.call(this, props || {});
+      __exports__.getChangelist = getChangelist;function promiseLabel(label) {
+        return 'Router: ' + label;
+      }
+
+      __exports__.promiseLabel = promiseLabel;function subclass(parentConstructor, proto) {
+        function C(props) {
+          parentConstructor.call(this, props || {});
+        }
+        C.prototype = oCreate(parentConstructor.prototype);
+        merge(C.prototype, proto);
+        return C;
+      }
+
+      __exports__.subclass = subclass;function resolveHook(obj, hookName) {
+        if (!obj) { return; }
+        var underscored = "_" + hookName;
+        return obj[underscored] && underscored ||
+          obj[hookName] && hookName;
+      }
+
+      function callHook(obj, _hookName, arg1, arg2) {
+        var hookName = resolveHook(obj, _hookName);
+        return hookName && obj[hookName].call(obj, arg1, arg2);
+      }
+
+      function applyHook(obj, _hookName, args) {
+        var hookName = resolveHook(obj, _hookName);
+        if (hookName) {
+          if (args.length === 0) {
+            return obj[hookName].call(obj);
+          } else if (args.length === 1) {
+            return obj[hookName].call(obj, args[0]);
+          } else if (args.length === 2) {
+            return obj[hookName].call(obj, args[0], args[1]);
+          } else {
+            return obj[hookName].apply(obj, args);
           }
-          C.prototype = oCreate(parentConstructor.prototype);
-          merge(C.prototype, proto);
-          return C;
         }
+      }
 
-        __exports__.subclass = subclass;function resolveHook(obj, hookName) {
-          if (!obj) { return; }
-          var underscored = "_" + hookName;
-          return obj[underscored] && underscored ||
-              obj[hookName] && hookName;
-        }
-
-        function callHook(obj, _hookName, arg1, arg2) {
-          var hookName = resolveHook(obj, _hookName);
-          return hookName && obj[hookName].call(obj, arg1, arg2);
-        }
-
-        function applyHook(obj, _hookName, args) {
-          var hookName = resolveHook(obj, _hookName);
-          if (hookName) {
-            if (args.length === 0) {
-              return obj[hookName].call(obj);
-            } else if (args.length === 1) {
-              return obj[hookName].call(obj, args[0]);
-            } else if (args.length === 2) {
-              return obj[hookName].call(obj, args[0], args[1]);
-            } else {
-              return obj[hookName].apply(obj, args);
-            }
-          }
-        }
-
-        __exports__.merge = merge;
-        __exports__.slice = slice;
-        __exports__.isParam = isParam;
-        __exports__.coerceQueryParamsToString = coerceQueryParamsToString;
-        __exports__.callHook = callHook;
-        __exports__.resolveHook = resolveHook;
-        __exports__.applyHook = applyHook;
-      });
+      __exports__.merge = merge;
+      __exports__.slice = slice;
+      __exports__.isParam = isParam;
+      __exports__.coerceQueryParamsToString = coerceQueryParamsToString;
+      __exports__.callHook = callHook;
+      __exports__.resolveHook = resolveHook;
+      __exports__.applyHook = applyHook;
+    });
   enifed("rsvp",
-      ["./rsvp/promise","./rsvp/events","./rsvp/node","./rsvp/all","./rsvp/all-settled","./rsvp/race","./rsvp/hash","./rsvp/hash-settled","./rsvp/rethrow","./rsvp/defer","./rsvp/config","./rsvp/map","./rsvp/resolve","./rsvp/reject","./rsvp/filter","./rsvp/asap","exports"],
-      function(__dependency1__, __dependency2__, __dependency3__, __dependency4__, __dependency5__, __dependency6__, __dependency7__, __dependency8__, __dependency9__, __dependency10__, __dependency11__, __dependency12__, __dependency13__, __dependency14__, __dependency15__, __dependency16__, __exports__) {
-        "use strict";
-        var Promise = __dependency1__["default"];
-        var EventTarget = __dependency2__["default"];
-        var denodeify = __dependency3__["default"];
-        var all = __dependency4__["default"];
-        var allSettled = __dependency5__["default"];
-        var race = __dependency6__["default"];
-        var hash = __dependency7__["default"];
-        var hashSettled = __dependency8__["default"];
-        var rethrow = __dependency9__["default"];
-        var defer = __dependency10__["default"];
-        var config = __dependency11__.config;
-        var configure = __dependency11__.configure;
-        var map = __dependency12__["default"];
-        var resolve = __dependency13__["default"];
-        var reject = __dependency14__["default"];
-        var filter = __dependency15__["default"];
-        var asap = __dependency16__["default"];
+    ["./rsvp/promise","./rsvp/events","./rsvp/node","./rsvp/all","./rsvp/all-settled","./rsvp/race","./rsvp/hash","./rsvp/hash-settled","./rsvp/rethrow","./rsvp/defer","./rsvp/config","./rsvp/map","./rsvp/resolve","./rsvp/reject","./rsvp/filter","./rsvp/asap","exports"],
+    function(__dependency1__, __dependency2__, __dependency3__, __dependency4__, __dependency5__, __dependency6__, __dependency7__, __dependency8__, __dependency9__, __dependency10__, __dependency11__, __dependency12__, __dependency13__, __dependency14__, __dependency15__, __dependency16__, __exports__) {
+      "use strict";
+      var Promise = __dependency1__["default"];
+      var EventTarget = __dependency2__["default"];
+      var denodeify = __dependency3__["default"];
+      var all = __dependency4__["default"];
+      var allSettled = __dependency5__["default"];
+      var race = __dependency6__["default"];
+      var hash = __dependency7__["default"];
+      var hashSettled = __dependency8__["default"];
+      var rethrow = __dependency9__["default"];
+      var defer = __dependency10__["default"];
+      var config = __dependency11__.config;
+      var configure = __dependency11__.configure;
+      var map = __dependency12__["default"];
+      var resolve = __dependency13__["default"];
+      var reject = __dependency14__["default"];
+      var filter = __dependency15__["default"];
+      var asap = __dependency16__["default"];
 
-        config.async = asap; // default async is asap;
-        var cast = resolve;
-        function async(callback, arg) {
-          config.async(callback, arg);
-        }
+      config.async = asap; // default async is asap;
+      var cast = resolve;
+      function async(callback, arg) {
+        config.async(callback, arg);
+      }
 
-        function on() {
-          config.on.apply(config, arguments);
-        }
+      function on() {
+        config.on.apply(config, arguments);
+      }
 
-        function off() {
-          config.off.apply(config, arguments);
-        }
+      function off() {
+        config.off.apply(config, arguments);
+      }
 
-        // Set up instrumentation through `window.__PROMISE_INTRUMENTATION__`
-        if (typeof window !== 'undefined' && typeof window['__PROMISE_INSTRUMENTATION__'] === 'object') {
-          var callbacks = window['__PROMISE_INSTRUMENTATION__'];
-          configure('instrument', true);
-          for (var eventName in callbacks) {
-            if (callbacks.hasOwnProperty(eventName)) {
-              on(eventName, callbacks[eventName]);
-            }
+      // Set up instrumentation through `window.__PROMISE_INTRUMENTATION__`
+      if (typeof window !== 'undefined' && typeof window['__PROMISE_INSTRUMENTATION__'] === 'object') {
+        var callbacks = window['__PROMISE_INSTRUMENTATION__'];
+        configure('instrument', true);
+        for (var eventName in callbacks) {
+          if (callbacks.hasOwnProperty(eventName)) {
+            on(eventName, callbacks[eventName]);
           }
         }
+      }
 
-        __exports__.cast = cast;
-        __exports__.Promise = Promise;
-        __exports__.EventTarget = EventTarget;
-        __exports__.all = all;
-        __exports__.allSettled = allSettled;
-        __exports__.race = race;
-        __exports__.hash = hash;
-        __exports__.hashSettled = hashSettled;
-        __exports__.rethrow = rethrow;
-        __exports__.defer = defer;
-        __exports__.denodeify = denodeify;
-        __exports__.configure = configure;
-        __exports__.on = on;
-        __exports__.off = off;
-        __exports__.resolve = resolve;
-        __exports__.reject = reject;
-        __exports__.async = async;
-        __exports__.map = map;
-        __exports__.filter = filter;
-      });
+      __exports__.cast = cast;
+      __exports__.Promise = Promise;
+      __exports__.EventTarget = EventTarget;
+      __exports__.all = all;
+      __exports__.allSettled = allSettled;
+      __exports__.race = race;
+      __exports__.hash = hash;
+      __exports__.hashSettled = hashSettled;
+      __exports__.rethrow = rethrow;
+      __exports__.defer = defer;
+      __exports__.denodeify = denodeify;
+      __exports__.configure = configure;
+      __exports__.on = on;
+      __exports__.off = off;
+      __exports__.resolve = resolve;
+      __exports__.reject = reject;
+      __exports__.async = async;
+      __exports__.map = map;
+      __exports__.filter = filter;
+    });
   enifed("rsvp.umd",
-      ["./rsvp"],
-      function(__dependency1__) {
-        "use strict";
-        var Promise = __dependency1__.Promise;
-        var allSettled = __dependency1__.allSettled;
-        var hash = __dependency1__.hash;
-        var hashSettled = __dependency1__.hashSettled;
-        var denodeify = __dependency1__.denodeify;
-        var on = __dependency1__.on;
-        var off = __dependency1__.off;
-        var map = __dependency1__.map;
-        var filter = __dependency1__.filter;
-        var resolve = __dependency1__.resolve;
-        var reject = __dependency1__.reject;
-        var rethrow = __dependency1__.rethrow;
-        var all = __dependency1__.all;
-        var defer = __dependency1__.defer;
-        var EventTarget = __dependency1__.EventTarget;
-        var configure = __dependency1__.configure;
-        var race = __dependency1__.race;
-        var async = __dependency1__.async;
+    ["./rsvp"],
+    function(__dependency1__) {
+      "use strict";
+      var Promise = __dependency1__.Promise;
+      var allSettled = __dependency1__.allSettled;
+      var hash = __dependency1__.hash;
+      var hashSettled = __dependency1__.hashSettled;
+      var denodeify = __dependency1__.denodeify;
+      var on = __dependency1__.on;
+      var off = __dependency1__.off;
+      var map = __dependency1__.map;
+      var filter = __dependency1__.filter;
+      var resolve = __dependency1__.resolve;
+      var reject = __dependency1__.reject;
+      var rethrow = __dependency1__.rethrow;
+      var all = __dependency1__.all;
+      var defer = __dependency1__.defer;
+      var EventTarget = __dependency1__.EventTarget;
+      var configure = __dependency1__.configure;
+      var race = __dependency1__.race;
+      var async = __dependency1__.async;
 
-        var RSVP = {
-          'race': race,
-          'Promise': Promise,
-          'allSettled': allSettled,
-          'hash': hash,
-          'hashSettled': hashSettled,
-          'denodeify': denodeify,
-          'on': on,
-          'off': off,
-          'map': map,
-          'filter': filter,
-          'resolve': resolve,
-          'reject': reject,
-          'all': all,
-          'rethrow': rethrow,
-          'defer': defer,
-          'EventTarget': EventTarget,
-          'configure': configure,
-          'async': async
-        };
+      var RSVP = {
+        'race': race,
+        'Promise': Promise,
+        'allSettled': allSettled,
+        'hash': hash,
+        'hashSettled': hashSettled,
+        'denodeify': denodeify,
+        'on': on,
+        'off': off,
+        'map': map,
+        'filter': filter,
+        'resolve': resolve,
+        'reject': reject,
+        'all': all,
+        'rethrow': rethrow,
+        'defer': defer,
+        'EventTarget': EventTarget,
+        'configure': configure,
+        'async': async
+      };
 
-        /* global define:true module:true window: true */
-        if (typeof enifed === 'function' && enifed['amd']) {
-          enifed(function() { return RSVP; });
-        } else if (typeof module !== 'undefined' && module['exports']) {
-          module['exports'] = RSVP;
-        } else if (typeof this !== 'undefined') {
-          this['RSVP'] = RSVP;
-        }
-      });
+      /* global define:true module:true window: true */
+      if (typeof enifed === 'function' && enifed['amd']) {
+        enifed(function() { return RSVP; });
+      } else if (typeof module !== 'undefined' && module['exports']) {
+        module['exports'] = RSVP;
+      } else if (typeof this !== 'undefined') {
+        this['RSVP'] = RSVP;
+      }
+    });
   enifed("rsvp/-internal",
-      ["./utils","./instrument","./config","exports"],
-      function(__dependency1__, __dependency2__, __dependency3__, __exports__) {
-        "use strict";
-        var objectOrFunction = __dependency1__.objectOrFunction;
-        var isFunction = __dependency1__.isFunction;
+    ["./utils","./instrument","./config","exports"],
+    function(__dependency1__, __dependency2__, __dependency3__, __exports__) {
+      "use strict";
+      var objectOrFunction = __dependency1__.objectOrFunction;
+      var isFunction = __dependency1__.isFunction;
 
-        var instrument = __dependency2__["default"];
+      var instrument = __dependency2__["default"];
 
-        var config = __dependency3__.config;
+      var config = __dependency3__.config;
 
-        function  withOwnPromise() {
-          return new TypeError('A promises callback cannot return that same promise.');
+      function  withOwnPromise() {
+        return new TypeError('A promises callback cannot return that same promise.');
+      }
+
+      function noop() {}
+
+      var PENDING   = void 0;
+      var FULFILLED = 1;
+      var REJECTED  = 2;
+
+      var GET_THEN_ERROR = new ErrorObject();
+
+      function getThen(promise) {
+        try {
+          return promise.then;
+        } catch(error) {
+          GET_THEN_ERROR.error = error;
+          return GET_THEN_ERROR;
         }
+      }
 
-        function noop() {}
-
-        var PENDING   = void 0;
-        var FULFILLED = 1;
-        var REJECTED  = 2;
-
-        var GET_THEN_ERROR = new ErrorObject();
-
-        function getThen(promise) {
-          try {
-            return promise.then;
-          } catch(error) {
-            GET_THEN_ERROR.error = error;
-            return GET_THEN_ERROR;
-          }
+      function tryThen(then, value, fulfillmentHandler, rejectionHandler) {
+        try {
+          then.call(value, fulfillmentHandler, rejectionHandler);
+        } catch(e) {
+          return e;
         }
+      }
 
-        function tryThen(then, value, fulfillmentHandler, rejectionHandler) {
-          try {
-            then.call(value, fulfillmentHandler, rejectionHandler);
-          } catch(e) {
-            return e;
-          }
-        }
-
-        function handleForeignThenable(promise, thenable, then) {
-          config.async(function(promise) {
-            var sealed = false;
-            var error = tryThen(then, thenable, function(value) {
-              if (sealed) { return; }
-              sealed = true;
-              if (thenable !== value) {
-                resolve(promise, value);
-              } else {
-                fulfill(promise, value);
-              }
-            }, function(reason) {
-              if (sealed) { return; }
-              sealed = true;
-
-              reject(promise, reason);
-            }, 'Settle: ' + (promise._label || ' unknown promise'));
-
-            if (!sealed && error) {
-              sealed = true;
-              reject(promise, error);
-            }
-          }, promise);
-        }
-
-        function handleOwnThenable(promise, thenable) {
-          if (thenable._state === FULFILLED) {
-            fulfill(promise, thenable._result);
-          } else if (promise._state === REJECTED) {
-            reject(promise, thenable._result);
-          } else {
-            subscribe(thenable, undefined, function(value) {
-              if (thenable !== value) {
-                resolve(promise, value);
-              } else {
-                fulfill(promise, value);
-              }
-            }, function(reason) {
-              reject(promise, reason);
-            });
-          }
-        }
-
-        function handleMaybeThenable(promise, maybeThenable) {
-          if (maybeThenable.constructor === promise.constructor) {
-            handleOwnThenable(promise, maybeThenable);
-          } else {
-            var then = getThen(maybeThenable);
-
-            if (then === GET_THEN_ERROR) {
-              reject(promise, GET_THEN_ERROR.error);
-            } else if (then === undefined) {
-              fulfill(promise, maybeThenable);
-            } else if (isFunction(then)) {
-              handleForeignThenable(promise, maybeThenable, then);
+      function handleForeignThenable(promise, thenable, then) {
+        config.async(function(promise) {
+          var sealed = false;
+          var error = tryThen(then, thenable, function(value) {
+            if (sealed) { return; }
+            sealed = true;
+            if (thenable !== value) {
+              resolve(promise, value);
             } else {
-              fulfill(promise, maybeThenable);
+              fulfill(promise, value);
             }
+          }, function(reason) {
+            if (sealed) { return; }
+            sealed = true;
+
+            reject(promise, reason);
+          }, 'Settle: ' + (promise._label || ' unknown promise'));
+
+          if (!sealed && error) {
+            sealed = true;
+            reject(promise, error);
           }
-        }
+        }, promise);
+      }
 
-        function resolve(promise, value) {
-          if (promise === value) {
-            fulfill(promise, value);
-          } else if (objectOrFunction(value)) {
-            handleMaybeThenable(promise, value);
-          } else {
-            fulfill(promise, value);
-          }
-        }
-
-        function publishRejection(promise) {
-          if (promise._onerror) {
-            promise._onerror(promise._result);
-          }
-
-          publish(promise);
-        }
-
-        function fulfill(promise, value) {
-          if (promise._state !== PENDING) { return; }
-
-          promise._result = value;
-          promise._state = FULFILLED;
-
-          if (promise._subscribers.length === 0) {
-            if (config.instrument) {
-              instrument('fulfilled', promise);
+      function handleOwnThenable(promise, thenable) {
+        if (thenable._state === FULFILLED) {
+          fulfill(promise, thenable._result);
+        } else if (promise._state === REJECTED) {
+          reject(promise, thenable._result);
+        } else {
+          subscribe(thenable, undefined, function(value) {
+            if (thenable !== value) {
+              resolve(promise, value);
+            } else {
+              fulfill(promise, value);
             }
+          }, function(reason) {
+            reject(promise, reason);
+          });
+        }
+      }
+
+      function handleMaybeThenable(promise, maybeThenable) {
+        if (maybeThenable.constructor === promise.constructor) {
+          handleOwnThenable(promise, maybeThenable);
+        } else {
+          var then = getThen(maybeThenable);
+
+          if (then === GET_THEN_ERROR) {
+            reject(promise, GET_THEN_ERROR.error);
+          } else if (then === undefined) {
+            fulfill(promise, maybeThenable);
+          } else if (isFunction(then)) {
+            handleForeignThenable(promise, maybeThenable, then);
           } else {
-            config.async(publish, promise);
+            fulfill(promise, maybeThenable);
           }
         }
+      }
 
-        function reject(promise, reason) {
-          if (promise._state !== PENDING) { return; }
-          promise._state = REJECTED;
-          promise._result = reason;
+      function resolve(promise, value) {
+        if (promise === value) {
+          fulfill(promise, value);
+        } else if (objectOrFunction(value)) {
+          handleMaybeThenable(promise, value);
+        } else {
+          fulfill(promise, value);
+        }
+      }
 
-          config.async(publishRejection, promise);
+      function publishRejection(promise) {
+        if (promise._onerror) {
+          promise._onerror(promise._result);
         }
 
-        function subscribe(parent, child, onFulfillment, onRejection) {
-          var subscribers = parent._subscribers;
-          var length = subscribers.length;
+        publish(promise);
+      }
 
-          parent._onerror = null;
+      function fulfill(promise, value) {
+        if (promise._state !== PENDING) { return; }
 
-          subscribers[length] = child;
-          subscribers[length + FULFILLED] = onFulfillment;
-          subscribers[length + REJECTED]  = onRejection;
+        promise._result = value;
+        promise._state = FULFILLED;
 
-          if (length === 0 && parent._state) {
-            config.async(publish, parent);
-          }
-        }
-
-        function publish(promise) {
-          var subscribers = promise._subscribers;
-          var settled = promise._state;
-
+        if (promise._subscribers.length === 0) {
           if (config.instrument) {
-            instrument(settled === FULFILLED ? 'fulfilled' : 'rejected', promise);
+            instrument('fulfilled', promise);
           }
+        } else {
+          config.async(publish, promise);
+        }
+      }
 
-          if (subscribers.length === 0) { return; }
+      function reject(promise, reason) {
+        if (promise._state !== PENDING) { return; }
+        promise._state = REJECTED;
+        promise._result = reason;
 
-          var child, callback, detail = promise._result;
+        config.async(publishRejection, promise);
+      }
 
-          for (var i = 0; i < subscribers.length; i += 3) {
-            child = subscribers[i];
-            callback = subscribers[i + settled];
+      function subscribe(parent, child, onFulfillment, onRejection) {
+        var subscribers = parent._subscribers;
+        var length = subscribers.length;
 
-            if (child) {
-              invokeCallback(settled, child, callback, detail);
-            } else {
-              callback(detail);
-            }
-          }
+        parent._onerror = null;
 
-          promise._subscribers.length = 0;
+        subscribers[length] = child;
+        subscribers[length + FULFILLED] = onFulfillment;
+        subscribers[length + REJECTED]  = onRejection;
+
+        if (length === 0 && parent._state) {
+          config.async(publish, parent);
+        }
+      }
+
+      function publish(promise) {
+        var subscribers = promise._subscribers;
+        var settled = promise._state;
+
+        if (config.instrument) {
+          instrument(settled === FULFILLED ? 'fulfilled' : 'rejected', promise);
         }
 
-        function ErrorObject() {
-          this.error = null;
-        }
+        if (subscribers.length === 0) { return; }
 
-        var TRY_CATCH_ERROR = new ErrorObject();
+        var child, callback, detail = promise._result;
 
-        function tryCatch(callback, detail) {
-          try {
-            return callback(detail);
-          } catch(e) {
-            TRY_CATCH_ERROR.error = e;
-            return TRY_CATCH_ERROR;
-          }
-        }
+        for (var i = 0; i < subscribers.length; i += 3) {
+          child = subscribers[i];
+          callback = subscribers[i + settled];
 
-        function invokeCallback(settled, promise, callback, detail) {
-          var hasCallback = isFunction(callback),
-              value, error, succeeded, failed;
-
-          if (hasCallback) {
-            value = tryCatch(callback, detail);
-
-            if (value === TRY_CATCH_ERROR) {
-              failed = true;
-              error = value.error;
-              value = null;
-            } else {
-              succeeded = true;
-            }
-
-            if (promise === value) {
-              reject(promise, withOwnPromise());
-              return;
-            }
-
+          if (child) {
+            invokeCallback(settled, child, callback, detail);
           } else {
-            value = detail;
+            callback(detail);
+          }
+        }
+
+        promise._subscribers.length = 0;
+      }
+
+      function ErrorObject() {
+        this.error = null;
+      }
+
+      var TRY_CATCH_ERROR = new ErrorObject();
+
+      function tryCatch(callback, detail) {
+        try {
+          return callback(detail);
+        } catch(e) {
+          TRY_CATCH_ERROR.error = e;
+          return TRY_CATCH_ERROR;
+        }
+      }
+
+      function invokeCallback(settled, promise, callback, detail) {
+        var hasCallback = isFunction(callback),
+          value, error, succeeded, failed;
+
+        if (hasCallback) {
+          value = tryCatch(callback, detail);
+
+          if (value === TRY_CATCH_ERROR) {
+            failed = true;
+            error = value.error;
+            value = null;
+          } else {
             succeeded = true;
           }
 
-          if (promise._state !== PENDING) {
-            // noop
-          } else if (hasCallback && succeeded) {
+          if (promise === value) {
+            reject(promise, withOwnPromise());
+            return;
+          }
+
+        } else {
+          value = detail;
+          succeeded = true;
+        }
+
+        if (promise._state !== PENDING) {
+          // noop
+        } else if (hasCallback && succeeded) {
+          resolve(promise, value);
+        } else if (failed) {
+          reject(promise, error);
+        } else if (settled === FULFILLED) {
+          fulfill(promise, value);
+        } else if (settled === REJECTED) {
+          reject(promise, value);
+        }
+      }
+
+      function initializePromise(promise, resolver) {
+        try {
+          resolver(function resolvePromise(value){
             resolve(promise, value);
-          } else if (failed) {
-            reject(promise, error);
-          } else if (settled === FULFILLED) {
-            fulfill(promise, value);
-          } else if (settled === REJECTED) {
-            reject(promise, value);
-          }
+          }, function rejectPromise(reason) {
+            reject(promise, reason);
+          });
+        } catch(e) {
+          reject(promise, e);
         }
+      }
 
-        function initializePromise(promise, resolver) {
-          try {
-            resolver(function resolvePromise(value){
-              resolve(promise, value);
-            }, function rejectPromise(reason) {
-              reject(promise, reason);
-            });
-          } catch(e) {
-            reject(promise, e);
-          }
-        }
-
-        __exports__.noop = noop;
-        __exports__.resolve = resolve;
-        __exports__.reject = reject;
-        __exports__.fulfill = fulfill;
-        __exports__.subscribe = subscribe;
-        __exports__.publish = publish;
-        __exports__.publishRejection = publishRejection;
-        __exports__.initializePromise = initializePromise;
-        __exports__.invokeCallback = invokeCallback;
-        __exports__.FULFILLED = FULFILLED;
-        __exports__.REJECTED = REJECTED;
-        __exports__.PENDING = PENDING;
-      });
+      __exports__.noop = noop;
+      __exports__.resolve = resolve;
+      __exports__.reject = reject;
+      __exports__.fulfill = fulfill;
+      __exports__.subscribe = subscribe;
+      __exports__.publish = publish;
+      __exports__.publishRejection = publishRejection;
+      __exports__.initializePromise = initializePromise;
+      __exports__.invokeCallback = invokeCallback;
+      __exports__.FULFILLED = FULFILLED;
+      __exports__.REJECTED = REJECTED;
+      __exports__.PENDING = PENDING;
+    });
   enifed("rsvp/all-settled",
-      ["./enumerator","./promise","./utils","exports"],
-      function(__dependency1__, __dependency2__, __dependency3__, __exports__) {
-        "use strict";
-        var Enumerator = __dependency1__["default"];
-        var makeSettledResult = __dependency1__.makeSettledResult;
-        var Promise = __dependency2__["default"];
-        var o_create = __dependency3__.o_create;
+    ["./enumerator","./promise","./utils","exports"],
+    function(__dependency1__, __dependency2__, __dependency3__, __exports__) {
+      "use strict";
+      var Enumerator = __dependency1__["default"];
+      var makeSettledResult = __dependency1__.makeSettledResult;
+      var Promise = __dependency2__["default"];
+      var o_create = __dependency3__.o_create;
 
-        function AllSettled(Constructor, entries, label) {
-          this._superConstructor(Constructor, entries, false /* don't abort on reject */, label);
-        }
+      function AllSettled(Constructor, entries, label) {
+        this._superConstructor(Constructor, entries, false /* don't abort on reject */, label);
+      }
 
-        AllSettled.prototype = o_create(Enumerator.prototype);
-        AllSettled.prototype._superConstructor = Enumerator;
-        AllSettled.prototype._makeResult = makeSettledResult;
-        AllSettled.prototype._validationError = function() {
-          return new Error('allSettled must be called with an array');
-        };
+      AllSettled.prototype = o_create(Enumerator.prototype);
+      AllSettled.prototype._superConstructor = Enumerator;
+      AllSettled.prototype._makeResult = makeSettledResult;
+      AllSettled.prototype._validationError = function() {
+        return new Error('allSettled must be called with an array');
+      };
 
-        /**
-         `RSVP.allSettled` is similar to `RSVP.all`, but instead of implementing
-         a fail-fast method, it waits until all the promises have returned and
-         shows you all the results. This is useful if you want to handle multiple
-         promises' failure states together as a set.
+      /**
+       `RSVP.allSettled` is similar to `RSVP.all`, but instead of implementing
+       a fail-fast method, it waits until all the promises have returned and
+       shows you all the results. This is useful if you want to handle multiple
+       promises' failure states together as a set.
 
-         Returns a promise that is fulfilled when all the given promises have been
-         settled. The return promise is fulfilled with an array of the states of
-         the promises passed into the `promises` array argument.
+       Returns a promise that is fulfilled when all the given promises have been
+       settled. The return promise is fulfilled with an array of the states of
+       the promises passed into the `promises` array argument.
 
-         Each state object will either indicate fulfillment or rejection, and
-         provide the corresponding value or reason. The states will take one of
-         the following formats:
+       Each state object will either indicate fulfillment or rejection, and
+       provide the corresponding value or reason. The states will take one of
+       the following formats:
 
-         ```javascript
-         { state: 'fulfilled', value: value }
-         or
-         { state: 'rejected', reason: reason }
-         ```
+       ```javascript
+       { state: 'fulfilled', value: value }
+       or
+       { state: 'rejected', reason: reason }
+       ```
 
-         Example:
+       Example:
 
-         ```javascript
-         var promise1 = RSVP.Promise.resolve(1);
-         var promise2 = RSVP.Promise.reject(new Error('2'));
-         var promise3 = RSVP.Promise.reject(new Error('3'));
-         var promises = [ promise1, promise2, promise3 ];
+       ```javascript
+       var promise1 = RSVP.Promise.resolve(1);
+       var promise2 = RSVP.Promise.reject(new Error('2'));
+       var promise3 = RSVP.Promise.reject(new Error('3'));
+       var promises = [ promise1, promise2, promise3 ];
 
-         RSVP.allSettled(promises).then(function(array){
+       RSVP.allSettled(promises).then(function(array){
         // array == [
         //   { state: 'fulfilled', value: 1 },
         //   { state: 'rejected', reason: Error },
@@ -45609,735 +45609,735 @@
         // Not run. (This block would only be called if allSettled had failed,
         // for instance if passed an incorrect argument type.)
       });
-         ```
+       ```
 
-         @method allSettled
-         @static
-         @for RSVP
-         @param {Array} promises
-         @param {String} label - optional string that describes the promise.
-         Useful for tooling.
-         @return {Promise} promise that is fulfilled with an array of the settled
-         states of the constituent promises.
-         */
+       @method allSettled
+       @static
+       @for RSVP
+       @param {Array} promises
+       @param {String} label - optional string that describes the promise.
+       Useful for tooling.
+       @return {Promise} promise that is fulfilled with an array of the settled
+       states of the constituent promises.
+       */
 
-        __exports__["default"] = function allSettled(entries, label) {
-          return new AllSettled(Promise, entries, label).promise;
-        }
-      });
+      __exports__["default"] = function allSettled(entries, label) {
+        return new AllSettled(Promise, entries, label).promise;
+      }
+    });
   enifed("rsvp/all",
-      ["./promise","exports"],
-      function(__dependency1__, __exports__) {
-        "use strict";
-        var Promise = __dependency1__["default"];
+    ["./promise","exports"],
+    function(__dependency1__, __exports__) {
+      "use strict";
+      var Promise = __dependency1__["default"];
 
-        /**
-         This is a convenient alias for `RSVP.Promise.all`.
+      /**
+       This is a convenient alias for `RSVP.Promise.all`.
 
-         @method all
-         @static
-         @for RSVP
-         @param {Array} array Array of promises.
-         @param {String} label An optional label. This is useful
-         for tooling.
-         */
-        __exports__["default"] = function all(array, label) {
-          return Promise.all(array, label);
-        }
-      });
+       @method all
+       @static
+       @for RSVP
+       @param {Array} array Array of promises.
+       @param {String} label An optional label. This is useful
+       for tooling.
+       */
+      __exports__["default"] = function all(array, label) {
+        return Promise.all(array, label);
+      }
+    });
   enifed("rsvp/asap",
-      ["exports"],
-      function(__exports__) {
-        "use strict";
-        var len = 0;
+    ["exports"],
+    function(__exports__) {
+      "use strict";
+      var len = 0;
 
-        __exports__["default"] = function asap(callback, arg) {
-          queue[len] = callback;
-          queue[len + 1] = arg;
-          len += 2;
-          if (len === 2) {
-            // If len is 1, that means that we need to schedule an async flush.
-            // If additional callbacks are queued before the queue is flushed, they
-            // will be processed by this flush that we are scheduling.
-            scheduleFlush();
-          }
+      __exports__["default"] = function asap(callback, arg) {
+        queue[len] = callback;
+        queue[len + 1] = arg;
+        len += 2;
+        if (len === 2) {
+          // If len is 1, that means that we need to schedule an async flush.
+          // If additional callbacks are queued before the queue is flushed, they
+          // will be processed by this flush that we are scheduling.
+          scheduleFlush();
         }
+      }
 
-        var browserWindow = (typeof window !== 'undefined') ? window : undefined
-        var browserGlobal = browserWindow || {};
-        var BrowserMutationObserver = browserGlobal.MutationObserver || browserGlobal.WebKitMutationObserver;
+      var browserWindow = (typeof window !== 'undefined') ? window : undefined
+      var browserGlobal = browserWindow || {};
+      var BrowserMutationObserver = browserGlobal.MutationObserver || browserGlobal.WebKitMutationObserver;
 
-        // test for web worker but not in IE10
-        var isWorker = typeof Uint8ClampedArray !== 'undefined' &&
-            typeof importScripts !== 'undefined' &&
-            typeof MessageChannel !== 'undefined';
+      // test for web worker but not in IE10
+      var isWorker = typeof Uint8ClampedArray !== 'undefined' &&
+        typeof importScripts !== 'undefined' &&
+        typeof MessageChannel !== 'undefined';
 
-        // node
-        function useNextTick() {
-          return function() {
-            process.nextTick(flush);
-          };
-        }
-
-        // vertx
-        function useVertxTimer() {
-          return function() {
-            vertxNext(flush);
-          };
-        }
-
-        function useMutationObserver() {
-          var iterations = 0;
-          var observer = new BrowserMutationObserver(flush);
-          var node = document.createTextNode('');
-          observer.observe(node, { characterData: true });
-
-          return function() {
-            node.data = (iterations = ++iterations % 2);
-          };
-        }
-
-        // web worker
-        function useMessageChannel() {
-          var channel = new MessageChannel();
-          channel.port1.onmessage = flush;
-          return function () {
-            channel.port2.postMessage(0);
-          };
-        }
-
-        function useSetTimeout() {
-          return function() {
-            setTimeout(flush, 1);
-          };
-        }
-
-        var queue = new Array(1000);
-        function flush() {
-          for (var i = 0; i < len; i+=2) {
-            var callback = queue[i];
-            var arg = queue[i+1];
-
-            callback(arg);
-
-            queue[i] = undefined;
-            queue[i+1] = undefined;
-          }
-
-          len = 0;
-        }
-
-        function attemptVertex() {
-          try {
-            var vertx = eriuqer('vertx');
-            var vertxNext = vertx.runOnLoop || vertx.runOnContext;
-            return useVertxTimer();
-          } catch(e) {
-            return useSetTimeout();
-          }
-        }
-
-        var scheduleFlush;
-        // Decide what async method to use to triggering processing of queued callbacks:
-        if (typeof process !== 'undefined' && {}.toString.call(process) === '[object process]') {
-          scheduleFlush = useNextTick();
-        } else if (BrowserMutationObserver) {
-          scheduleFlush = useMutationObserver();
-        } else if (isWorker) {
-          scheduleFlush = useMessageChannel();
-        } else if (browserWindow === undefined && typeof eriuqer === 'function') {
-          scheduleFlush = attemptVertex();
-        } else {
-          scheduleFlush = useSetTimeout();
-        }
-      });
-  enifed("rsvp/config",
-      ["./events","exports"],
-      function(__dependency1__, __exports__) {
-        "use strict";
-        var EventTarget = __dependency1__["default"];
-
-        var config = {
-          instrument: false
+      // node
+      function useNextTick() {
+        return function() {
+          process.nextTick(flush);
         };
+      }
 
-        EventTarget.mixin(config);
+      // vertx
+      function useVertxTimer() {
+        return function() {
+          vertxNext(flush);
+        };
+      }
 
-        function configure(name, value) {
-          if (name === 'onerror') {
-            // handle for legacy users that expect the actual
-            // error to be passed to their function added via
-            // `RSVP.configure('onerror', someFunctionHere);`
-            config.on('error', value);
-            return;
-          }
+      function useMutationObserver() {
+        var iterations = 0;
+        var observer = new BrowserMutationObserver(flush);
+        var node = document.createTextNode('');
+        observer.observe(node, { characterData: true });
 
-          if (arguments.length === 2) {
-            config[name] = value;
+        return function() {
+          node.data = (iterations = ++iterations % 2);
+        };
+      }
+
+      // web worker
+      function useMessageChannel() {
+        var channel = new MessageChannel();
+        channel.port1.onmessage = flush;
+        return function () {
+          channel.port2.postMessage(0);
+        };
+      }
+
+      function useSetTimeout() {
+        return function() {
+          setTimeout(flush, 1);
+        };
+      }
+
+      var queue = new Array(1000);
+      function flush() {
+        for (var i = 0; i < len; i+=2) {
+          var callback = queue[i];
+          var arg = queue[i+1];
+
+          callback(arg);
+
+          queue[i] = undefined;
+          queue[i+1] = undefined;
+        }
+
+        len = 0;
+      }
+
+      function attemptVertex() {
+        try {
+          var vertx = eriuqer('vertx');
+          var vertxNext = vertx.runOnLoop || vertx.runOnContext;
+          return useVertxTimer();
+        } catch(e) {
+          return useSetTimeout();
+        }
+      }
+
+      var scheduleFlush;
+      // Decide what async method to use to triggering processing of queued callbacks:
+      if (typeof process !== 'undefined' && {}.toString.call(process) === '[object process]') {
+        scheduleFlush = useNextTick();
+      } else if (BrowserMutationObserver) {
+        scheduleFlush = useMutationObserver();
+      } else if (isWorker) {
+        scheduleFlush = useMessageChannel();
+      } else if (browserWindow === undefined && typeof eriuqer === 'function') {
+        scheduleFlush = attemptVertex();
+      } else {
+        scheduleFlush = useSetTimeout();
+      }
+    });
+  enifed("rsvp/config",
+    ["./events","exports"],
+    function(__dependency1__, __exports__) {
+      "use strict";
+      var EventTarget = __dependency1__["default"];
+
+      var config = {
+        instrument: false
+      };
+
+      EventTarget.mixin(config);
+
+      function configure(name, value) {
+        if (name === 'onerror') {
+          // handle for legacy users that expect the actual
+          // error to be passed to their function added via
+          // `RSVP.configure('onerror', someFunctionHere);`
+          config.on('error', value);
+          return;
+        }
+
+        if (arguments.length === 2) {
+          config[name] = value;
+        } else {
+          return config[name];
+        }
+      }
+
+      __exports__.config = config;
+      __exports__.configure = configure;
+    });
+  enifed("rsvp/defer",
+    ["./promise","exports"],
+    function(__dependency1__, __exports__) {
+      "use strict";
+      var Promise = __dependency1__["default"];
+
+      /**
+       `RSVP.defer` returns an object similar to jQuery's `$.Deferred`.
+       `RSVP.defer` should be used when porting over code reliant on `$.Deferred`'s
+       interface. New code should use the `RSVP.Promise` constructor instead.
+
+       The object returned from `RSVP.defer` is a plain object with three properties:
+
+       * promise - an `RSVP.Promise`.
+       * reject - a function that causes the `promise` property on this object to
+       become rejected
+       * resolve - a function that causes the `promise` property on this object to
+       become fulfilled.
+
+       Example:
+
+       ```javascript
+       var deferred = RSVP.defer();
+
+       deferred.resolve("Success!");
+
+       defered.promise.then(function(value){
+         // value here is "Success!"
+       });
+       ```
+
+       @method defer
+       @static
+       @for RSVP
+       @param {String} label optional string for labeling the promise.
+       Useful for tooling.
+       @return {Object}
+       */
+
+      __exports__["default"] = function defer(label) {
+        var deferred = { };
+
+        deferred['promise'] = new Promise(function(resolve, reject) {
+          deferred['resolve'] = resolve;
+          deferred['reject'] = reject;
+        }, label);
+
+        return deferred;
+      }
+    });
+  enifed("rsvp/enumerator",
+    ["./utils","./-internal","exports"],
+    function(__dependency1__, __dependency2__, __exports__) {
+      "use strict";
+      var isArray = __dependency1__.isArray;
+      var isMaybeThenable = __dependency1__.isMaybeThenable;
+
+      var noop = __dependency2__.noop;
+      var reject = __dependency2__.reject;
+      var fulfill = __dependency2__.fulfill;
+      var subscribe = __dependency2__.subscribe;
+      var FULFILLED = __dependency2__.FULFILLED;
+      var REJECTED = __dependency2__.REJECTED;
+      var PENDING = __dependency2__.PENDING;
+
+      function makeSettledResult(state, position, value) {
+        if (state === FULFILLED) {
+          return {
+            state: 'fulfilled',
+            value: value
+          };
+        } else {
+          return {
+            state: 'rejected',
+            reason: value
+          };
+        }
+      }
+
+      __exports__.makeSettledResult = makeSettledResult;function Enumerator(Constructor, input, abortOnReject, label) {
+        this._instanceConstructor = Constructor;
+        this.promise = new Constructor(noop, label);
+        this._abortOnReject = abortOnReject;
+
+        if (this._validateInput(input)) {
+          this._input     = input;
+          this.length     = input.length;
+          this._remaining = input.length;
+
+          this._init();
+
+          if (this.length === 0) {
+            fulfill(this.promise, this._result);
           } else {
-            return config[name];
+            this.length = this.length || 0;
+            this._enumerate();
+            if (this._remaining === 0) {
+              fulfill(this.promise, this._result);
+            }
+          }
+        } else {
+          reject(this.promise, this._validationError());
+        }
+      }
+
+      Enumerator.prototype._validateInput = function(input) {
+        return isArray(input);
+      };
+
+      Enumerator.prototype._validationError = function() {
+        return new Error('Array Methods must be provided an Array');
+      };
+
+      Enumerator.prototype._init = function() {
+        this._result = new Array(this.length);
+      };
+
+      __exports__["default"] = Enumerator;
+
+      Enumerator.prototype._enumerate = function() {
+        var length  = this.length;
+        var promise = this.promise;
+        var input   = this._input;
+
+        for (var i = 0; promise._state === PENDING && i < length; i++) {
+          this._eachEntry(input[i], i);
+        }
+      };
+
+      Enumerator.prototype._eachEntry = function(entry, i) {
+        var c = this._instanceConstructor;
+        if (isMaybeThenable(entry)) {
+          if (entry.constructor === c && entry._state !== PENDING) {
+            entry._onerror = null;
+            this._settledAt(entry._state, i, entry._result);
+          } else {
+            this._willSettleAt(c.resolve(entry), i);
+          }
+        } else {
+          this._remaining--;
+          this._result[i] = this._makeResult(FULFILLED, i, entry);
+        }
+      };
+
+      Enumerator.prototype._settledAt = function(state, i, value) {
+        var promise = this.promise;
+
+        if (promise._state === PENDING) {
+          this._remaining--;
+
+          if (this._abortOnReject && state === REJECTED) {
+            reject(promise, value);
+          } else {
+            this._result[i] = this._makeResult(state, i, value);
           }
         }
 
-        __exports__.config = config;
-        __exports__.configure = configure;
-      });
-  enifed("rsvp/defer",
-      ["./promise","exports"],
-      function(__dependency1__, __exports__) {
-        "use strict";
-        var Promise = __dependency1__["default"];
+        if (this._remaining === 0) {
+          fulfill(promise, this._result);
+        }
+      };
+
+      Enumerator.prototype._makeResult = function(state, i, value) {
+        return value;
+      };
+
+      Enumerator.prototype._willSettleAt = function(promise, i) {
+        var enumerator = this;
+
+        subscribe(promise, undefined, function(value) {
+          enumerator._settledAt(FULFILLED, i, value);
+        }, function(reason) {
+          enumerator._settledAt(REJECTED, i, reason);
+        });
+      };
+    });
+  enifed("rsvp/events",
+    ["exports"],
+    function(__exports__) {
+      "use strict";
+      function indexOf(callbacks, callback) {
+        for (var i=0, l=callbacks.length; i<l; i++) {
+          if (callbacks[i] === callback) { return i; }
+        }
+
+        return -1;
+      }
+
+      function callbacksFor(object) {
+        var callbacks = object._promiseCallbacks;
+
+        if (!callbacks) {
+          callbacks = object._promiseCallbacks = {};
+        }
+
+        return callbacks;
+      }
+
+      /**
+       @class RSVP.EventTarget
+       */
+      __exports__["default"] = {
 
         /**
-         `RSVP.defer` returns an object similar to jQuery's `$.Deferred`.
-         `RSVP.defer` should be used when porting over code reliant on `$.Deferred`'s
-         interface. New code should use the `RSVP.Promise` constructor instead.
-
-         The object returned from `RSVP.defer` is a plain object with three properties:
-
-         * promise - an `RSVP.Promise`.
-         * reject - a function that causes the `promise` property on this object to
-         become rejected
-         * resolve - a function that causes the `promise` property on this object to
-         become fulfilled.
-
+         `RSVP.EventTarget.mixin` extends an object with EventTarget methods. For
          Example:
 
          ```javascript
-         var deferred = RSVP.defer();
+         var object = {};
 
-         deferred.resolve("Success!");
+         RSVP.EventTarget.mixin(object);
 
-         defered.promise.then(function(value){
-         // value here is "Success!"
-       });
-         ```
-
-         @method defer
-         @static
-         @for RSVP
-         @param {String} label optional string for labeling the promise.
-         Useful for tooling.
-         @return {Object}
-         */
-
-        __exports__["default"] = function defer(label) {
-          var deferred = { };
-
-          deferred['promise'] = new Promise(function(resolve, reject) {
-            deferred['resolve'] = resolve;
-            deferred['reject'] = reject;
-          }, label);
-
-          return deferred;
-        }
-      });
-  enifed("rsvp/enumerator",
-      ["./utils","./-internal","exports"],
-      function(__dependency1__, __dependency2__, __exports__) {
-        "use strict";
-        var isArray = __dependency1__.isArray;
-        var isMaybeThenable = __dependency1__.isMaybeThenable;
-
-        var noop = __dependency2__.noop;
-        var reject = __dependency2__.reject;
-        var fulfill = __dependency2__.fulfill;
-        var subscribe = __dependency2__.subscribe;
-        var FULFILLED = __dependency2__.FULFILLED;
-        var REJECTED = __dependency2__.REJECTED;
-        var PENDING = __dependency2__.PENDING;
-
-        function makeSettledResult(state, position, value) {
-          if (state === FULFILLED) {
-            return {
-              state: 'fulfilled',
-              value: value
-            };
-          } else {
-            return {
-              state: 'rejected',
-              reason: value
-            };
-          }
-        }
-
-        __exports__.makeSettledResult = makeSettledResult;function Enumerator(Constructor, input, abortOnReject, label) {
-          this._instanceConstructor = Constructor;
-          this.promise = new Constructor(noop, label);
-          this._abortOnReject = abortOnReject;
-
-          if (this._validateInput(input)) {
-            this._input     = input;
-            this.length     = input.length;
-            this._remaining = input.length;
-
-            this._init();
-
-            if (this.length === 0) {
-              fulfill(this.promise, this._result);
-            } else {
-              this.length = this.length || 0;
-              this._enumerate();
-              if (this._remaining === 0) {
-                fulfill(this.promise, this._result);
-              }
-            }
-          } else {
-            reject(this.promise, this._validationError());
-          }
-        }
-
-        Enumerator.prototype._validateInput = function(input) {
-          return isArray(input);
-        };
-
-        Enumerator.prototype._validationError = function() {
-          return new Error('Array Methods must be provided an Array');
-        };
-
-        Enumerator.prototype._init = function() {
-          this._result = new Array(this.length);
-        };
-
-        __exports__["default"] = Enumerator;
-
-        Enumerator.prototype._enumerate = function() {
-          var length  = this.length;
-          var promise = this.promise;
-          var input   = this._input;
-
-          for (var i = 0; promise._state === PENDING && i < length; i++) {
-            this._eachEntry(input[i], i);
-          }
-        };
-
-        Enumerator.prototype._eachEntry = function(entry, i) {
-          var c = this._instanceConstructor;
-          if (isMaybeThenable(entry)) {
-            if (entry.constructor === c && entry._state !== PENDING) {
-              entry._onerror = null;
-              this._settledAt(entry._state, i, entry._result);
-            } else {
-              this._willSettleAt(c.resolve(entry), i);
-            }
-          } else {
-            this._remaining--;
-            this._result[i] = this._makeResult(FULFILLED, i, entry);
-          }
-        };
-
-        Enumerator.prototype._settledAt = function(state, i, value) {
-          var promise = this.promise;
-
-          if (promise._state === PENDING) {
-            this._remaining--;
-
-            if (this._abortOnReject && state === REJECTED) {
-              reject(promise, value);
-            } else {
-              this._result[i] = this._makeResult(state, i, value);
-            }
-          }
-
-          if (this._remaining === 0) {
-            fulfill(promise, this._result);
-          }
-        };
-
-        Enumerator.prototype._makeResult = function(state, i, value) {
-          return value;
-        };
-
-        Enumerator.prototype._willSettleAt = function(promise, i) {
-          var enumerator = this;
-
-          subscribe(promise, undefined, function(value) {
-            enumerator._settledAt(FULFILLED, i, value);
-          }, function(reason) {
-            enumerator._settledAt(REJECTED, i, reason);
-          });
-        };
-      });
-  enifed("rsvp/events",
-      ["exports"],
-      function(__exports__) {
-        "use strict";
-        function indexOf(callbacks, callback) {
-          for (var i=0, l=callbacks.length; i<l; i++) {
-            if (callbacks[i] === callback) { return i; }
-          }
-
-          return -1;
-        }
-
-        function callbacksFor(object) {
-          var callbacks = object._promiseCallbacks;
-
-          if (!callbacks) {
-            callbacks = object._promiseCallbacks = {};
-          }
-
-          return callbacks;
-        }
-
-        /**
-         @class RSVP.EventTarget
-         */
-        __exports__["default"] = {
-
-          /**
-           `RSVP.EventTarget.mixin` extends an object with EventTarget methods. For
-           Example:
-
-           ```javascript
-           var object = {};
-
-           RSVP.EventTarget.mixin(object);
-
-           object.on('finished', function(event) {
+         object.on('finished', function(event) {
           // handle event
         });
 
-           object.trigger('finished', { detail: value });
-           ```
+         object.trigger('finished', { detail: value });
+         ```
 
-           `EventTarget.mixin` also works with prototypes:
+         `EventTarget.mixin` also works with prototypes:
 
-           ```javascript
-           var Person = function() {};
-           RSVP.EventTarget.mixin(Person.prototype);
+         ```javascript
+         var Person = function() {};
+         RSVP.EventTarget.mixin(Person.prototype);
 
-           var yehuda = new Person();
-           var tom = new Person();
+         var yehuda = new Person();
+         var tom = new Person();
 
-           yehuda.on('poke', function(event) {
+         yehuda.on('poke', function(event) {
           console.log('Yehuda says OW');
         });
 
-           tom.on('poke', function(event) {
+         tom.on('poke', function(event) {
           console.log('Tom says OW');
         });
 
-           yehuda.trigger('poke');
-           tom.trigger('poke');
-           ```
+         yehuda.trigger('poke');
+         tom.trigger('poke');
+         ```
 
-           @method mixin
-           @for RSVP.EventTarget
-           @private
-           @param {Object} object object to extend with EventTarget methods
-           */
-          mixin: function(object) {
-            object.on = this.on;
-            object.off = this.off;
-            object.trigger = this.trigger;
-            object._promiseCallbacks = undefined;
-            return object;
-          },
+         @method mixin
+         @for RSVP.EventTarget
+         @private
+         @param {Object} object object to extend with EventTarget methods
+         */
+        mixin: function(object) {
+          object.on = this.on;
+          object.off = this.off;
+          object.trigger = this.trigger;
+          object._promiseCallbacks = undefined;
+          return object;
+        },
 
-          /**
-           Registers a callback to be executed when `eventName` is triggered
+        /**
+         Registers a callback to be executed when `eventName` is triggered
 
-           ```javascript
-           object.on('event', function(eventInfo){
+         ```javascript
+         object.on('event', function(eventInfo){
           // handle the event
         });
 
-           object.trigger('event');
-           ```
+         object.trigger('event');
+         ```
 
-           @method on
-           @for RSVP.EventTarget
-           @private
-           @param {String} eventName name of the event to listen for
-           @param {Function} callback function to be called when the event is triggered.
-           */
-          on: function(eventName, callback) {
-            var allCallbacks = callbacksFor(this), callbacks;
+         @method on
+         @for RSVP.EventTarget
+         @private
+         @param {String} eventName name of the event to listen for
+         @param {Function} callback function to be called when the event is triggered.
+         */
+        on: function(eventName, callback) {
+          var allCallbacks = callbacksFor(this), callbacks;
 
-            callbacks = allCallbacks[eventName];
+          callbacks = allCallbacks[eventName];
 
-            if (!callbacks) {
-              callbacks = allCallbacks[eventName] = [];
-            }
+          if (!callbacks) {
+            callbacks = allCallbacks[eventName] = [];
+          }
 
-            if (indexOf(callbacks, callback) === -1) {
-              callbacks.push(callback);
-            }
-          },
+          if (indexOf(callbacks, callback) === -1) {
+            callbacks.push(callback);
+          }
+        },
 
-          /**
-           You can use `off` to stop firing a particular callback for an event:
+        /**
+         You can use `off` to stop firing a particular callback for an event:
 
-           ```javascript
-           function doStuff() { // do stuff! }
-           object.on('stuff', doStuff);
+         ```javascript
+         function doStuff() { // do stuff! }
+         object.on('stuff', doStuff);
 
-           object.trigger('stuff'); // doStuff will be called
+         object.trigger('stuff'); // doStuff will be called
 
-           // Unregister ONLY the doStuff callback
-           object.off('stuff', doStuff);
-           object.trigger('stuff'); // doStuff will NOT be called
-           ```
+         // Unregister ONLY the doStuff callback
+         object.off('stuff', doStuff);
+         object.trigger('stuff'); // doStuff will NOT be called
+         ```
 
-           If you don't pass a `callback` argument to `off`, ALL callbacks for the
-           event will not be executed when the event fires. For example:
+         If you don't pass a `callback` argument to `off`, ALL callbacks for the
+         event will not be executed when the event fires. For example:
 
-           ```javascript
-           var callback1 = function(){};
-           var callback2 = function(){};
+         ```javascript
+         var callback1 = function(){};
+         var callback2 = function(){};
 
-           object.on('stuff', callback1);
-           object.on('stuff', callback2);
+         object.on('stuff', callback1);
+         object.on('stuff', callback2);
 
-           object.trigger('stuff'); // callback1 and callback2 will be executed.
+         object.trigger('stuff'); // callback1 and callback2 will be executed.
 
-           object.off('stuff');
-           object.trigger('stuff'); // callback1 and callback2 will not be executed!
-           ```
+         object.off('stuff');
+         object.trigger('stuff'); // callback1 and callback2 will not be executed!
+         ```
 
-           @method off
-           @for RSVP.EventTarget
-           @private
-           @param {String} eventName event to stop listening to
-           @param {Function} callback optional argument. If given, only the function
-           given will be removed from the event's callback queue. If no `callback`
-           argument is given, all callbacks will be removed from the event's callback
-           queue.
-           */
-          off: function(eventName, callback) {
-            var allCallbacks = callbacksFor(this), callbacks, index;
+         @method off
+         @for RSVP.EventTarget
+         @private
+         @param {String} eventName event to stop listening to
+         @param {Function} callback optional argument. If given, only the function
+         given will be removed from the event's callback queue. If no `callback`
+         argument is given, all callbacks will be removed from the event's callback
+         queue.
+         */
+        off: function(eventName, callback) {
+          var allCallbacks = callbacksFor(this), callbacks, index;
 
-            if (!callback) {
-              allCallbacks[eventName] = [];
-              return;
-            }
+          if (!callback) {
+            allCallbacks[eventName] = [];
+            return;
+          }
 
-            callbacks = allCallbacks[eventName];
+          callbacks = allCallbacks[eventName];
 
-            index = indexOf(callbacks, callback);
+          index = indexOf(callbacks, callback);
 
-            if (index !== -1) { callbacks.splice(index, 1); }
-          },
+          if (index !== -1) { callbacks.splice(index, 1); }
+        },
 
-          /**
-           Use `trigger` to fire custom events. For example:
+        /**
+         Use `trigger` to fire custom events. For example:
 
-           ```javascript
-           object.on('foo', function(){
+         ```javascript
+         object.on('foo', function(){
           console.log('foo event happened!');
         });
-           object.trigger('foo');
-           // 'foo event happened!' logged to the console
-           ```
+         object.trigger('foo');
+         // 'foo event happened!' logged to the console
+         ```
 
-           You can also pass a value as a second argument to `trigger` that will be
-           passed as an argument to all event listeners for the event:
+         You can also pass a value as a second argument to `trigger` that will be
+         passed as an argument to all event listeners for the event:
 
-           ```javascript
-           object.on('foo', function(value){
+         ```javascript
+         object.on('foo', function(value){
           console.log(value.name);
         });
 
-           object.trigger('foo', { name: 'bar' });
-           // 'bar' logged to the console
-           ```
-
-           @method trigger
-           @for RSVP.EventTarget
-           @private
-           @param {String} eventName name of the event to be triggered
-           @param {Any} options optional value to be passed to any event handlers for
-           the given `eventName`
-           */
-          trigger: function(eventName, options) {
-            var allCallbacks = callbacksFor(this), callbacks, callback;
-
-            if (callbacks = allCallbacks[eventName]) {
-              // Don't cache the callbacks.length since it may grow
-              for (var i=0; i<callbacks.length; i++) {
-                callback = callbacks[i];
-
-                callback(options);
-              }
-            }
-          }
-        };
-      });
-  enifed("rsvp/filter",
-      ["./promise","./utils","exports"],
-      function(__dependency1__, __dependency2__, __exports__) {
-        "use strict";
-        var Promise = __dependency1__["default"];
-        var isFunction = __dependency2__.isFunction;
-
-        /**
-         `RSVP.filter` is similar to JavaScript's native `filter` method, except that it
-         waits for all promises to become fulfilled before running the `filterFn` on
-         each item in given to `promises`. `RSVP.filter` returns a promise that will
-         become fulfilled with the result of running `filterFn` on the values the
-         promises become fulfilled with.
-
-         For example:
-
-         ```javascript
-
-         var promise1 = RSVP.resolve(1);
-         var promise2 = RSVP.resolve(2);
-         var promise3 = RSVP.resolve(3);
-
-         var promises = [promise1, promise2, promise3];
-
-         var filterFn = function(item){
-        return item > 1;
-      };
-
-         RSVP.filter(promises, filterFn).then(function(result){
-        // result is [ 2, 3 ]
-      });
+         object.trigger('foo', { name: 'bar' });
+         // 'bar' logged to the console
          ```
 
-         If any of the `promises` given to `RSVP.filter` are rejected, the first promise
-         that is rejected will be given as an argument to the returned promise's
-         rejection handler. For example:
+         @method trigger
+         @for RSVP.EventTarget
+         @private
+         @param {String} eventName name of the event to be triggered
+         @param {Any} options optional value to be passed to any event handlers for
+         the given `eventName`
+         */
+        trigger: function(eventName, options) {
+          var allCallbacks = callbacksFor(this), callbacks, callback;
 
-         ```javascript
-         var promise1 = RSVP.resolve(1);
-         var promise2 = RSVP.reject(new Error('2'));
-         var promise3 = RSVP.reject(new Error('3'));
-         var promises = [ promise1, promise2, promise3 ];
+          if (callbacks = allCallbacks[eventName]) {
+            // Don't cache the callbacks.length since it may grow
+            for (var i=0; i<callbacks.length; i++) {
+              callback = callbacks[i];
 
-         var filterFn = function(item){
+              callback(options);
+            }
+          }
+        }
+      };
+    });
+  enifed("rsvp/filter",
+    ["./promise","./utils","exports"],
+    function(__dependency1__, __dependency2__, __exports__) {
+      "use strict";
+      var Promise = __dependency1__["default"];
+      var isFunction = __dependency2__.isFunction;
+
+      /**
+       `RSVP.filter` is similar to JavaScript's native `filter` method, except that it
+       waits for all promises to become fulfilled before running the `filterFn` on
+       each item in given to `promises`. `RSVP.filter` returns a promise that will
+       become fulfilled with the result of running `filterFn` on the values the
+       promises become fulfilled with.
+
+       For example:
+
+       ```javascript
+
+       var promise1 = RSVP.resolve(1);
+       var promise2 = RSVP.resolve(2);
+       var promise3 = RSVP.resolve(3);
+
+       var promises = [promise1, promise2, promise3];
+
+       var filterFn = function(item){
         return item > 1;
       };
 
-         RSVP.filter(promises, filterFn).then(function(array){
+       RSVP.filter(promises, filterFn).then(function(result){
+        // result is [ 2, 3 ]
+      });
+       ```
+
+       If any of the `promises` given to `RSVP.filter` are rejected, the first promise
+       that is rejected will be given as an argument to the returned promise's
+       rejection handler. For example:
+
+       ```javascript
+       var promise1 = RSVP.resolve(1);
+       var promise2 = RSVP.reject(new Error('2'));
+       var promise3 = RSVP.reject(new Error('3'));
+       var promises = [ promise1, promise2, promise3 ];
+
+       var filterFn = function(item){
+        return item > 1;
+      };
+
+       RSVP.filter(promises, filterFn).then(function(array){
         // Code here never runs because there are rejected promises!
       }, function(reason) {
         // reason.message === '2'
       });
-         ```
+       ```
 
-         `RSVP.filter` will also wait for any promises returned from `filterFn`.
-         For instance, you may want to fetch a list of users then return a subset
-         of those users based on some asynchronous operation:
+       `RSVP.filter` will also wait for any promises returned from `filterFn`.
+       For instance, you may want to fetch a list of users then return a subset
+       of those users based on some asynchronous operation:
 
-         ```javascript
+       ```javascript
 
-         var alice = { name: 'alice' };
-         var bob   = { name: 'bob' };
-         var users = [ alice, bob ];
+       var alice = { name: 'alice' };
+       var bob   = { name: 'bob' };
+       var users = [ alice, bob ];
 
-         var promises = users.map(function(user){
+       var promises = users.map(function(user){
         return RSVP.resolve(user);
       });
 
-         var filterFn = function(user){
+       var filterFn = function(user){
         // Here, Alice has permissions to create a blog post, but Bob does not.
         return getPrivilegesForUser(user).then(function(privs){
           return privs.can_create_blog_post === true;
         });
       };
-         RSVP.filter(promises, filterFn).then(function(users){
+       RSVP.filter(promises, filterFn).then(function(users){
         // true, because the server told us only Alice can create a blog post.
         users.length === 1;
         // false, because Alice is the only user present in `users`
         users[0] === bob;
       });
-         ```
+       ```
 
-         @method filter
-         @static
-         @for RSVP
-         @param {Array} promises
-         @param {Function} filterFn - function to be called on each resolved value to
-         filter the final results.
-         @param {String} label optional string describing the promise. Useful for
-         tooling.
-         @return {Promise}
-         */
-        __exports__["default"] = function filter(promises, filterFn, label) {
-          return Promise.all(promises, label).then(function(values) {
-            if (!isFunction(filterFn)) {
-              throw new TypeError("You must pass a function as filter's second argument.");
-            }
+       @method filter
+       @static
+       @for RSVP
+       @param {Array} promises
+       @param {Function} filterFn - function to be called on each resolved value to
+       filter the final results.
+       @param {String} label optional string describing the promise. Useful for
+       tooling.
+       @return {Promise}
+       */
+      __exports__["default"] = function filter(promises, filterFn, label) {
+        return Promise.all(promises, label).then(function(values) {
+          if (!isFunction(filterFn)) {
+            throw new TypeError("You must pass a function as filter's second argument.");
+          }
 
-            var length = values.length;
-            var filtered = new Array(length);
+          var length = values.length;
+          var filtered = new Array(length);
+
+          for (var i = 0; i < length; i++) {
+            filtered[i] = filterFn(values[i]);
+          }
+
+          return Promise.all(filtered, label).then(function(filtered) {
+            var results = new Array(length);
+            var newLength = 0;
 
             for (var i = 0; i < length; i++) {
-              filtered[i] = filterFn(values[i]);
+              if (filtered[i]) {
+                results[newLength] = values[i];
+                newLength++;
+              }
             }
 
-            return Promise.all(filtered, label).then(function(filtered) {
-              var results = new Array(length);
-              var newLength = 0;
+            results.length = newLength;
 
-              for (var i = 0; i < length; i++) {
-                if (filtered[i]) {
-                  results[newLength] = values[i];
-                  newLength++;
-                }
-              }
-
-              results.length = newLength;
-
-              return results;
-            });
+            return results;
           });
-        }
-      });
+        });
+      }
+    });
   enifed("rsvp/hash-settled",
-      ["./promise","./enumerator","./promise-hash","./utils","exports"],
-      function(__dependency1__, __dependency2__, __dependency3__, __dependency4__, __exports__) {
-        "use strict";
-        var Promise = __dependency1__["default"];
-        var makeSettledResult = __dependency2__.makeSettledResult;
-        var PromiseHash = __dependency3__["default"];
-        var Enumerator = __dependency2__["default"];
-        var o_create = __dependency4__.o_create;
+    ["./promise","./enumerator","./promise-hash","./utils","exports"],
+    function(__dependency1__, __dependency2__, __dependency3__, __dependency4__, __exports__) {
+      "use strict";
+      var Promise = __dependency1__["default"];
+      var makeSettledResult = __dependency2__.makeSettledResult;
+      var PromiseHash = __dependency3__["default"];
+      var Enumerator = __dependency2__["default"];
+      var o_create = __dependency4__.o_create;
 
-        function HashSettled(Constructor, object, label) {
-          this._superConstructor(Constructor, object, false, label);
-        }
+      function HashSettled(Constructor, object, label) {
+        this._superConstructor(Constructor, object, false, label);
+      }
 
-        HashSettled.prototype = o_create(PromiseHash.prototype);
-        HashSettled.prototype._superConstructor = Enumerator;
-        HashSettled.prototype._makeResult = makeSettledResult;
+      HashSettled.prototype = o_create(PromiseHash.prototype);
+      HashSettled.prototype._superConstructor = Enumerator;
+      HashSettled.prototype._makeResult = makeSettledResult;
 
-        HashSettled.prototype._validationError = function() {
-          return new Error('hashSettled must be called with an object');
-        };
+      HashSettled.prototype._validationError = function() {
+        return new Error('hashSettled must be called with an object');
+      };
 
-        /**
-         `RSVP.hashSettled` is similar to `RSVP.allSettled`, but takes an object
-         instead of an array for its `promises` argument.
+      /**
+       `RSVP.hashSettled` is similar to `RSVP.allSettled`, but takes an object
+       instead of an array for its `promises` argument.
 
-         Unlike `RSVP.all` or `RSVP.hash`, which implement a fail-fast method,
-         but like `RSVP.allSettled`, `hashSettled` waits until all the
-         constituent promises have returned and then shows you all the results
-         with their states and values/reasons. This is useful if you want to
-         handle multiple promises' failure states together as a set.
+       Unlike `RSVP.all` or `RSVP.hash`, which implement a fail-fast method,
+       but like `RSVP.allSettled`, `hashSettled` waits until all the
+       constituent promises have returned and then shows you all the results
+       with their states and values/reasons. This is useful if you want to
+       handle multiple promises' failure states together as a set.
 
-         Returns a promise that is fulfilled when all the given promises have been
-         settled, or rejected if the passed parameters are invalid.
+       Returns a promise that is fulfilled when all the given promises have been
+       settled, or rejected if the passed parameters are invalid.
 
-         The returned promise is fulfilled with a hash that has the same key names as
-         the `promises` object argument. If any of the values in the object are not
-         promises, they will be copied over to the fulfilled object and marked with state
-         'fulfilled'.
+       The returned promise is fulfilled with a hash that has the same key names as
+       the `promises` object argument. If any of the values in the object are not
+       promises, they will be copied over to the fulfilled object and marked with state
+       'fulfilled'.
 
-         Example:
+       Example:
 
-         ```javascript
-         var promises = {
+       ```javascript
+       var promises = {
         myPromise: RSVP.Promise.resolve(1),
         yourPromise: RSVP.Promise.resolve(2),
         theirPromise: RSVP.Promise.resolve(3),
         notAPromise: 4
       };
 
-         RSVP.hashSettled(promises).then(function(hash){
+       RSVP.hashSettled(promises).then(function(hash){
         // hash here is an object that looks like:
         // {
         //   myPromise: { state: 'fulfilled', value: 1 },
@@ -46346,21 +46346,21 @@
         //   notAPromise: { state: 'fulfilled', value: 4 }
         // }
       });
-         ```
+       ```
 
-         If any of the `promises` given to `RSVP.hash` are rejected, the state will
-         be set to 'rejected' and the reason for rejection provided.
+       If any of the `promises` given to `RSVP.hash` are rejected, the state will
+       be set to 'rejected' and the reason for rejection provided.
 
-         Example:
+       Example:
 
-         ```javascript
-         var promises = {
+       ```javascript
+       var promises = {
         myPromise: RSVP.Promise.resolve(1),
         rejectedPromise: RSVP.Promise.reject(new Error('rejection')),
         anotherRejectedPromise: RSVP.Promise.reject(new Error('more rejection')),
       };
 
-         RSVP.hashSettled(promises).then(function(hash){
+       RSVP.hashSettled(promises).then(function(hash){
         // hash here is an object that looks like:
         // {
         //   myPromise:              { state: 'fulfilled', value: 1 },
@@ -46370,26 +46370,26 @@
         // Note that for rejectedPromise, reason.message == 'rejection',
         // and for anotherRejectedPromise, reason.message == 'more rejection'.
       });
-         ```
+       ```
 
-         An important note: `RSVP.hashSettled` is intended for plain JavaScript objects that
-         are just a set of keys and values. `RSVP.hashSettled` will NOT preserve prototype
-         chains.
+       An important note: `RSVP.hashSettled` is intended for plain JavaScript objects that
+       are just a set of keys and values. `RSVP.hashSettled` will NOT preserve prototype
+       chains.
 
-         Example:
+       Example:
 
-         ```javascript
-         function MyConstructor(){
+       ```javascript
+       function MyConstructor(){
         this.example = RSVP.Promise.resolve('Example');
       }
 
-         MyConstructor.prototype = {
+       MyConstructor.prototype = {
         protoProperty: RSVP.Promise.resolve('Proto Property')
       };
 
-         var myObject = new MyConstructor();
+       var myObject = new MyConstructor();
 
-         RSVP.hashSettled(myObject).then(function(hash){
+       RSVP.hashSettled(myObject).then(function(hash){
         // protoProperty will not be present, instead you will just have an
         // object that looks like:
         // {
@@ -46399,49 +46399,49 @@
         // hash.hasOwnProperty('protoProperty'); // false
         // 'undefined' === typeof hash.protoProperty
       });
-         ```
+       ```
 
-         @method hashSettled
-         @for RSVP
-         @param {Object} promises
-         @param {String} label optional string that describes the promise.
-         Useful for tooling.
-         @return {Promise} promise that is fulfilled when when all properties of `promises`
-         have been settled.
-         @static
-         */
-        __exports__["default"] = function hashSettled(object, label) {
-          return new HashSettled(Promise, object, label).promise;
-        }
-      });
+       @method hashSettled
+       @for RSVP
+       @param {Object} promises
+       @param {String} label optional string that describes the promise.
+       Useful for tooling.
+       @return {Promise} promise that is fulfilled when when all properties of `promises`
+       have been settled.
+       @static
+       */
+      __exports__["default"] = function hashSettled(object, label) {
+        return new HashSettled(Promise, object, label).promise;
+      }
+    });
   enifed("rsvp/hash",
-      ["./promise","./promise-hash","exports"],
-      function(__dependency1__, __dependency2__, __exports__) {
-        "use strict";
-        var Promise = __dependency1__["default"];
-        var PromiseHash = __dependency2__["default"];
+    ["./promise","./promise-hash","exports"],
+    function(__dependency1__, __dependency2__, __exports__) {
+      "use strict";
+      var Promise = __dependency1__["default"];
+      var PromiseHash = __dependency2__["default"];
 
-        /**
-         `RSVP.hash` is similar to `RSVP.all`, but takes an object instead of an array
-         for its `promises` argument.
+      /**
+       `RSVP.hash` is similar to `RSVP.all`, but takes an object instead of an array
+       for its `promises` argument.
 
-         Returns a promise that is fulfilled when all the given promises have been
-         fulfilled, or rejected if any of them become rejected. The returned promise
-         is fulfilled with a hash that has the same key names as the `promises` object
-         argument. If any of the values in the object are not promises, they will
-         simply be copied over to the fulfilled object.
+       Returns a promise that is fulfilled when all the given promises have been
+       fulfilled, or rejected if any of them become rejected. The returned promise
+       is fulfilled with a hash that has the same key names as the `promises` object
+       argument. If any of the values in the object are not promises, they will
+       simply be copied over to the fulfilled object.
 
-         Example:
+       Example:
 
-         ```javascript
-         var promises = {
+       ```javascript
+       var promises = {
         myPromise: RSVP.resolve(1),
         yourPromise: RSVP.resolve(2),
         theirPromise: RSVP.resolve(3),
         notAPromise: 4
       };
 
-         RSVP.hash(promises).then(function(hash){
+       RSVP.hash(promises).then(function(hash){
         // hash here is an object that looks like:
         // {
         //   myPromise: 1,
@@ -46450,45 +46450,45 @@
         //   notAPromise: 4
         // }
       });
-         ````
+       ````
 
-         If any of the `promises` given to `RSVP.hash` are rejected, the first promise
-         that is rejected will be given as the reason to the rejection handler.
+       If any of the `promises` given to `RSVP.hash` are rejected, the first promise
+       that is rejected will be given as the reason to the rejection handler.
 
-         Example:
+       Example:
 
-         ```javascript
-         var promises = {
+       ```javascript
+       var promises = {
         myPromise: RSVP.resolve(1),
         rejectedPromise: RSVP.reject(new Error('rejectedPromise')),
         anotherRejectedPromise: RSVP.reject(new Error('anotherRejectedPromise')),
       };
 
-         RSVP.hash(promises).then(function(hash){
+       RSVP.hash(promises).then(function(hash){
         // Code here never runs because there are rejected promises!
       }, function(reason) {
         // reason.message === 'rejectedPromise'
       });
-         ```
+       ```
 
-         An important note: `RSVP.hash` is intended for plain JavaScript objects that
-         are just a set of keys and values. `RSVP.hash` will NOT preserve prototype
-         chains.
+       An important note: `RSVP.hash` is intended for plain JavaScript objects that
+       are just a set of keys and values. `RSVP.hash` will NOT preserve prototype
+       chains.
 
-         Example:
+       Example:
 
-         ```javascript
-         function MyConstructor(){
+       ```javascript
+       function MyConstructor(){
         this.example = RSVP.resolve('Example');
       }
 
-         MyConstructor.prototype = {
+       MyConstructor.prototype = {
         protoProperty: RSVP.resolve('Proto Property')
       };
 
-         var myObject = new MyConstructor();
+       var myObject = new MyConstructor();
 
-         RSVP.hash(myObject).then(function(hash){
+       RSVP.hash(myObject).then(function(hash){
         // protoProperty will not be present, instead you will just have an
         // object that looks like:
         // {
@@ -46498,572 +46498,572 @@
         // hash.hasOwnProperty('protoProperty'); // false
         // 'undefined' === typeof hash.protoProperty
       });
-         ```
+       ```
 
-         @method hash
-         @static
-         @for RSVP
-         @param {Object} promises
-         @param {String} label optional string that describes the promise.
-         Useful for tooling.
-         @return {Promise} promise that is fulfilled when all properties of `promises`
-         have been fulfilled, or rejected if any of them become rejected.
-         */
-        __exports__["default"] = function hash(object, label) {
-          return new PromiseHash(Promise, object, label).promise;
-        }
-      });
+       @method hash
+       @static
+       @for RSVP
+       @param {Object} promises
+       @param {String} label optional string that describes the promise.
+       Useful for tooling.
+       @return {Promise} promise that is fulfilled when all properties of `promises`
+       have been fulfilled, or rejected if any of them become rejected.
+       */
+      __exports__["default"] = function hash(object, label) {
+        return new PromiseHash(Promise, object, label).promise;
+      }
+    });
   enifed("rsvp/instrument",
-      ["./config","./utils","exports"],
-      function(__dependency1__, __dependency2__, __exports__) {
-        "use strict";
-        var config = __dependency1__.config;
-        var now = __dependency2__.now;
+    ["./config","./utils","exports"],
+    function(__dependency1__, __dependency2__, __exports__) {
+      "use strict";
+      var config = __dependency1__.config;
+      var now = __dependency2__.now;
 
-        var queue = [];
+      var queue = [];
 
-        function scheduleFlush() {
-          setTimeout(function() {
-            var entry;
-            for (var i = 0; i < queue.length; i++) {
-              entry = queue[i];
+      function scheduleFlush() {
+        setTimeout(function() {
+          var entry;
+          for (var i = 0; i < queue.length; i++) {
+            entry = queue[i];
 
-              var payload = entry.payload;
+            var payload = entry.payload;
 
-              payload.guid = payload.key + payload.id;
-              payload.childGuid = payload.key + payload.childId;
-              if (payload.error) {
-                payload.stack = payload.error.stack;
-              }
-
-              config.trigger(entry.name, entry.payload);
+            payload.guid = payload.key + payload.id;
+            payload.childGuid = payload.key + payload.childId;
+            if (payload.error) {
+              payload.stack = payload.error.stack;
             }
-            queue.length = 0;
-          }, 50);
-        }
 
-        __exports__["default"] = function instrument(eventName, promise, child) {
-          if (1 === queue.push({
-                name: eventName,
-                payload: {
-                  key: promise._guidKey,
-                  id:  promise._id,
-                  eventName: eventName,
-                  detail: promise._result,
-                  childId: child && child._id,
-                  label: promise._label,
-                  timeStamp: now(),
-                  error: config["instrument-with-stack"] ? new Error(promise._label) : null
-                }})) {
-            scheduleFlush();
+            config.trigger(entry.name, entry.payload);
           }
+          queue.length = 0;
+        }, 50);
+      }
+
+      __exports__["default"] = function instrument(eventName, promise, child) {
+        if (1 === queue.push({
+            name: eventName,
+            payload: {
+              key: promise._guidKey,
+              id:  promise._id,
+              eventName: eventName,
+              detail: promise._result,
+              childId: child && child._id,
+              label: promise._label,
+              timeStamp: now(),
+              error: config["instrument-with-stack"] ? new Error(promise._label) : null
+            }})) {
+          scheduleFlush();
         }
-      });
+      }
+    });
   enifed("rsvp/map",
-      ["./promise","./utils","exports"],
-      function(__dependency1__, __dependency2__, __exports__) {
-        "use strict";
-        var Promise = __dependency1__["default"];
-        var isFunction = __dependency2__.isFunction;
+    ["./promise","./utils","exports"],
+    function(__dependency1__, __dependency2__, __exports__) {
+      "use strict";
+      var Promise = __dependency1__["default"];
+      var isFunction = __dependency2__.isFunction;
 
-        /**
-         `RSVP.map` is similar to JavaScript's native `map` method, except that it
-         waits for all promises to become fulfilled before running the `mapFn` on
-         each item in given to `promises`. `RSVP.map` returns a promise that will
-         become fulfilled with the result of running `mapFn` on the values the promises
-         become fulfilled with.
+      /**
+       `RSVP.map` is similar to JavaScript's native `map` method, except that it
+       waits for all promises to become fulfilled before running the `mapFn` on
+       each item in given to `promises`. `RSVP.map` returns a promise that will
+       become fulfilled with the result of running `mapFn` on the values the promises
+       become fulfilled with.
 
-         For example:
+       For example:
 
-         ```javascript
+       ```javascript
 
-         var promise1 = RSVP.resolve(1);
-         var promise2 = RSVP.resolve(2);
-         var promise3 = RSVP.resolve(3);
-         var promises = [ promise1, promise2, promise3 ];
+       var promise1 = RSVP.resolve(1);
+       var promise2 = RSVP.resolve(2);
+       var promise3 = RSVP.resolve(3);
+       var promises = [ promise1, promise2, promise3 ];
 
-         var mapFn = function(item){
+       var mapFn = function(item){
         return item + 1;
       };
 
-         RSVP.map(promises, mapFn).then(function(result){
+       RSVP.map(promises, mapFn).then(function(result){
         // result is [ 2, 3, 4 ]
       });
-         ```
+       ```
 
-         If any of the `promises` given to `RSVP.map` are rejected, the first promise
-         that is rejected will be given as an argument to the returned promise's
-         rejection handler. For example:
+       If any of the `promises` given to `RSVP.map` are rejected, the first promise
+       that is rejected will be given as an argument to the returned promise's
+       rejection handler. For example:
 
-         ```javascript
-         var promise1 = RSVP.resolve(1);
-         var promise2 = RSVP.reject(new Error('2'));
-         var promise3 = RSVP.reject(new Error('3'));
-         var promises = [ promise1, promise2, promise3 ];
+       ```javascript
+       var promise1 = RSVP.resolve(1);
+       var promise2 = RSVP.reject(new Error('2'));
+       var promise3 = RSVP.reject(new Error('3'));
+       var promises = [ promise1, promise2, promise3 ];
 
-         var mapFn = function(item){
+       var mapFn = function(item){
         return item + 1;
       };
 
-         RSVP.map(promises, mapFn).then(function(array){
+       RSVP.map(promises, mapFn).then(function(array){
         // Code here never runs because there are rejected promises!
       }, function(reason) {
         // reason.message === '2'
       });
-         ```
+       ```
 
-         `RSVP.map` will also wait if a promise is returned from `mapFn`. For example,
-         say you want to get all comments from a set of blog posts, but you need
-         the blog posts first because they contain a url to those comments.
+       `RSVP.map` will also wait if a promise is returned from `mapFn`. For example,
+       say you want to get all comments from a set of blog posts, but you need
+       the blog posts first because they contain a url to those comments.
 
-         ```javscript
+       ```javscript
 
-         var mapFn = function(blogPost){
+       var mapFn = function(blogPost){
         // getComments does some ajax and returns an RSVP.Promise that is fulfilled
         // with some comments data
         return getComments(blogPost.comments_url);
       };
 
-         // getBlogPosts does some ajax and returns an RSVP.Promise that is fulfilled
-         // with some blog post data
-         RSVP.map(getBlogPosts(), mapFn).then(function(comments){
+       // getBlogPosts does some ajax and returns an RSVP.Promise that is fulfilled
+       // with some blog post data
+       RSVP.map(getBlogPosts(), mapFn).then(function(comments){
         // comments is the result of asking the server for the comments
         // of all blog posts returned from getBlogPosts()
       });
-         ```
+       ```
 
-         @method map
-         @static
-         @for RSVP
-         @param {Array} promises
-         @param {Function} mapFn function to be called on each fulfilled promise.
-         @param {String} label optional string for labeling the promise.
-         Useful for tooling.
-         @return {Promise} promise that is fulfilled with the result of calling
-         `mapFn` on each fulfilled promise or value when they become fulfilled.
-         The promise will be rejected if any of the given `promises` become rejected.
-         @static
-         */
-        __exports__["default"] = function map(promises, mapFn, label) {
-          return Promise.all(promises, label).then(function(values) {
-            if (!isFunction(mapFn)) {
-              throw new TypeError("You must pass a function as map's second argument.");
-            }
+       @method map
+       @static
+       @for RSVP
+       @param {Array} promises
+       @param {Function} mapFn function to be called on each fulfilled promise.
+       @param {String} label optional string for labeling the promise.
+       Useful for tooling.
+       @return {Promise} promise that is fulfilled with the result of calling
+       `mapFn` on each fulfilled promise or value when they become fulfilled.
+       The promise will be rejected if any of the given `promises` become rejected.
+       @static
+       */
+      __exports__["default"] = function map(promises, mapFn, label) {
+        return Promise.all(promises, label).then(function(values) {
+          if (!isFunction(mapFn)) {
+            throw new TypeError("You must pass a function as map's second argument.");
+          }
 
-            var length = values.length;
-            var results = new Array(length);
+          var length = values.length;
+          var results = new Array(length);
 
-            for (var i = 0; i < length; i++) {
-              results[i] = mapFn(values[i]);
-            }
+          for (var i = 0; i < length; i++) {
+            results[i] = mapFn(values[i]);
+          }
 
-            return Promise.all(results, label);
-          });
-        }
-      });
+          return Promise.all(results, label);
+        });
+      }
+    });
   enifed("rsvp/node",
-      ["./promise","./-internal","./utils","exports"],
-      function(__dependency1__, __dependency2__, __dependency3__, __exports__) {
-        "use strict";
-        var Promise = __dependency1__["default"];
-        var noop = __dependency2__.noop;
-        var resolve = __dependency2__.resolve;
-        var reject = __dependency2__.reject;
-        var isArray = __dependency3__.isArray;
+    ["./promise","./-internal","./utils","exports"],
+    function(__dependency1__, __dependency2__, __dependency3__, __exports__) {
+      "use strict";
+      var Promise = __dependency1__["default"];
+      var noop = __dependency2__.noop;
+      var resolve = __dependency2__.resolve;
+      var reject = __dependency2__.reject;
+      var isArray = __dependency3__.isArray;
 
-        function Result() {
-          this.value = undefined;
+      function Result() {
+        this.value = undefined;
+      }
+
+      var ERROR = new Result();
+      var GET_THEN_ERROR = new Result();
+
+      function getThen(obj) {
+        try {
+          return obj.then;
+        } catch(error) {
+          ERROR.value= error;
+          return ERROR;
+        }
+      }
+
+
+      function tryApply(f, s, a) {
+        try {
+          f.apply(s, a);
+        } catch(error) {
+          ERROR.value = error;
+          return ERROR;
+        }
+      }
+
+      function makeObject(_, argumentNames) {
+        var obj = {};
+        var name;
+        var i;
+        var length = _.length;
+        var args = new Array(length);
+
+        for (var x = 0; x < length; x++) {
+          args[x] = _[x];
         }
 
-        var ERROR = new Result();
-        var GET_THEN_ERROR = new Result();
+        for (i = 0; i < argumentNames.length; i++) {
+          name = argumentNames[i];
+          obj[name] = args[i + 1];
+        }
 
-        function getThen(obj) {
-          try {
-            return obj.then;
-          } catch(error) {
-            ERROR.value= error;
-            return ERROR;
+        return obj;
+      }
+
+      function arrayResult(_) {
+        var length = _.length;
+        var args = new Array(length - 1);
+
+        for (var i = 1; i < length; i++) {
+          args[i - 1] = _[i];
+        }
+
+        return args;
+      }
+
+      function wrapThenable(then, promise) {
+        return {
+          then: function(onFulFillment, onRejection) {
+            return then.call(promise, onFulFillment, onRejection);
           }
-        }
+        };
+      }
 
+      /**
+       `RSVP.denodeify` takes a 'node-style' function and returns a function that
+       will return an `RSVP.Promise`. You can use `denodeify` in Node.js or the
+       browser when you'd prefer to use promises over using callbacks. For example,
+       `denodeify` transforms the following:
 
-        function tryApply(f, s, a) {
-          try {
-            f.apply(s, a);
-          } catch(error) {
-            ERROR.value = error;
-            return ERROR;
-          }
-        }
+       ```javascript
+       var fs = require('fs');
 
-        function makeObject(_, argumentNames) {
-          var obj = {};
-          var name;
-          var i;
-          var length = _.length;
-          var args = new Array(length);
-
-          for (var x = 0; x < length; x++) {
-            args[x] = _[x];
-          }
-
-          for (i = 0; i < argumentNames.length; i++) {
-            name = argumentNames[i];
-            obj[name] = args[i + 1];
-          }
-
-          return obj;
-        }
-
-        function arrayResult(_) {
-          var length = _.length;
-          var args = new Array(length - 1);
-
-          for (var i = 1; i < length; i++) {
-            args[i - 1] = _[i];
-          }
-
-          return args;
-        }
-
-        function wrapThenable(then, promise) {
-          return {
-            then: function(onFulFillment, onRejection) {
-              return then.call(promise, onFulFillment, onRejection);
-            }
-          };
-        }
-
-        /**
-         `RSVP.denodeify` takes a 'node-style' function and returns a function that
-         will return an `RSVP.Promise`. You can use `denodeify` in Node.js or the
-         browser when you'd prefer to use promises over using callbacks. For example,
-         `denodeify` transforms the following:
-
-         ```javascript
-         var fs = require('fs');
-
-         fs.readFile('myfile.txt', function(err, data){
+       fs.readFile('myfile.txt', function(err, data){
         if (err) return handleError(err);
         handleData(data);
       });
-         ```
+       ```
 
-         into:
+       into:
 
-         ```javascript
-         var fs = require('fs');
-         var readFile = RSVP.denodeify(fs.readFile);
+       ```javascript
+       var fs = require('fs');
+       var readFile = RSVP.denodeify(fs.readFile);
 
-         readFile('myfile.txt').then(handleData, handleError);
-         ```
+       readFile('myfile.txt').then(handleData, handleError);
+       ```
 
-         If the node function has multiple success parameters, then `denodeify`
-         just returns the first one:
+       If the node function has multiple success parameters, then `denodeify`
+       just returns the first one:
 
-         ```javascript
-         var request = RSVP.denodeify(require('request'));
+       ```javascript
+       var request = RSVP.denodeify(require('request'));
 
-         request('http://example.com').then(function(res) {
+       request('http://example.com').then(function(res) {
         // ...
       });
-         ```
+       ```
 
-         However, if you need all success parameters, setting `denodeify`'s
-         second parameter to `true` causes it to return all success parameters
-         as an array:
+       However, if you need all success parameters, setting `denodeify`'s
+       second parameter to `true` causes it to return all success parameters
+       as an array:
 
-         ```javascript
-         var request = RSVP.denodeify(require('request'), true);
+       ```javascript
+       var request = RSVP.denodeify(require('request'), true);
 
-         request('http://example.com').then(function(result) {
+       request('http://example.com').then(function(result) {
         // result[0] -> res
         // result[1] -> body
       });
-         ```
+       ```
 
-         Or if you pass it an array with names it returns the parameters as a hash:
+       Or if you pass it an array with names it returns the parameters as a hash:
 
-         ```javascript
-         var request = RSVP.denodeify(require('request'), ['res', 'body']);
+       ```javascript
+       var request = RSVP.denodeify(require('request'), ['res', 'body']);
 
-         request('http://example.com').then(function(result) {
+       request('http://example.com').then(function(result) {
         // result.res
         // result.body
       });
-         ```
+       ```
 
-         Sometimes you need to retain the `this`:
+       Sometimes you need to retain the `this`:
 
-         ```javascript
-         var app = require('express')();
-         var render = RSVP.denodeify(app.render.bind(app));
-         ```
+       ```javascript
+       var app = require('express')();
+       var render = RSVP.denodeify(app.render.bind(app));
+       ```
 
-         The denodified function inherits from the original function. It works in all
-         environments, except IE 10 and below. Consequently all properties of the original
-         function are available to you. However, any properties you change on the
-         denodeified function won't be changed on the original function. Example:
+       The denodified function inherits from the original function. It works in all
+       environments, except IE 10 and below. Consequently all properties of the original
+       function are available to you. However, any properties you change on the
+       denodeified function won't be changed on the original function. Example:
 
-         ```javascript
-         var request = RSVP.denodeify(require('request')),
-         cookieJar = request.jar(); // <- Inheritance is used here
+       ```javascript
+       var request = RSVP.denodeify(require('request')),
+       cookieJar = request.jar(); // <- Inheritance is used here
 
-         request('http://example.com', {jar: cookieJar}).then(function(res) {
+       request('http://example.com', {jar: cookieJar}).then(function(res) {
         // cookieJar.cookies holds now the cookies returned by example.com
       });
-         ```
+       ```
 
-         Using `denodeify` makes it easier to compose asynchronous operations instead
-         of using callbacks. For example, instead of:
+       Using `denodeify` makes it easier to compose asynchronous operations instead
+       of using callbacks. For example, instead of:
 
-         ```javascript
-         var fs = require('fs');
+       ```javascript
+       var fs = require('fs');
 
-         fs.readFile('myfile.txt', function(err, data){
+       fs.readFile('myfile.txt', function(err, data){
         if (err) { ... } // Handle error
         fs.writeFile('myfile2.txt', data, function(err){
           if (err) { ... } // Handle error
           console.log('done')
         });
       });
-         ```
+       ```
 
-         you can chain the operations together using `then` from the returned promise:
+       you can chain the operations together using `then` from the returned promise:
 
-         ```javascript
-         var fs = require('fs');
-         var readFile = RSVP.denodeify(fs.readFile);
-         var writeFile = RSVP.denodeify(fs.writeFile);
+       ```javascript
+       var fs = require('fs');
+       var readFile = RSVP.denodeify(fs.readFile);
+       var writeFile = RSVP.denodeify(fs.writeFile);
 
-         readFile('myfile.txt').then(function(data){
+       readFile('myfile.txt').then(function(data){
         return writeFile('myfile2.txt', data);
       }).then(function(){
         console.log('done')
       }).catch(function(error){
         // Handle error
       });
-         ```
+       ```
 
-         @method denodeify
-         @static
-         @for RSVP
-         @param {Function} nodeFunc a 'node-style' function that takes a callback as
-         its last argument. The callback expects an error to be passed as its first
-         argument (if an error occurred, otherwise null), and the value from the
-         operation as its second argument ('function(err, value){ }').
-         @param {Boolean|Array} argumentNames An optional paramter that if set
-         to `true` causes the promise to fulfill with the callback's success arguments
-         as an array. This is useful if the node function has multiple success
-         paramters. If you set this paramter to an array with names, the promise will
-         fulfill with a hash with these names as keys and the success parameters as
-         values.
-         @return {Function} a function that wraps `nodeFunc` to return an
-         `RSVP.Promise`
-         @static
-         */
-        __exports__["default"] = function denodeify(nodeFunc, options) {
-          var fn = function() {
-            var self = this;
-            var l = arguments.length;
-            var args = new Array(l + 1);
-            var arg;
-            var promiseInput = false;
+       @method denodeify
+       @static
+       @for RSVP
+       @param {Function} nodeFunc a 'node-style' function that takes a callback as
+       its last argument. The callback expects an error to be passed as its first
+       argument (if an error occurred, otherwise null), and the value from the
+       operation as its second argument ('function(err, value){ }').
+       @param {Boolean|Array} argumentNames An optional paramter that if set
+       to `true` causes the promise to fulfill with the callback's success arguments
+       as an array. This is useful if the node function has multiple success
+       paramters. If you set this paramter to an array with names, the promise will
+       fulfill with a hash with these names as keys and the success parameters as
+       values.
+       @return {Function} a function that wraps `nodeFunc` to return an
+       `RSVP.Promise`
+       @static
+       */
+      __exports__["default"] = function denodeify(nodeFunc, options) {
+        var fn = function() {
+          var self = this;
+          var l = arguments.length;
+          var args = new Array(l + 1);
+          var arg;
+          var promiseInput = false;
 
-            for (var i = 0; i < l; ++i) {
-              arg = arguments[i];
+          for (var i = 0; i < l; ++i) {
+            arg = arguments[i];
 
-              if (!promiseInput) {
-                // TODO: clean this up
-                promiseInput = needsPromiseInput(arg);
-                if (promiseInput === GET_THEN_ERROR) {
-                  var p = new Promise(noop);
-                  reject(p, GET_THEN_ERROR.value);
-                  return p;
-                } else if (promiseInput && promiseInput !== true) {
-                  arg = wrapThenable(promiseInput, arg);
-                }
+            if (!promiseInput) {
+              // TODO: clean this up
+              promiseInput = needsPromiseInput(arg);
+              if (promiseInput === GET_THEN_ERROR) {
+                var p = new Promise(noop);
+                reject(p, GET_THEN_ERROR.value);
+                return p;
+              } else if (promiseInput && promiseInput !== true) {
+                arg = wrapThenable(promiseInput, arg);
               }
-              args[i] = arg;
             }
+            args[i] = arg;
+          }
 
-            var promise = new Promise(noop);
+          var promise = new Promise(noop);
 
-            args[l] = function(err, val) {
-              if (err)
-                reject(promise, err);
-              else if (options === undefined)
-                resolve(promise, val);
-              else if (options === true)
-                resolve(promise, arrayResult(arguments));
-              else if (isArray(options))
-                resolve(promise, makeObject(arguments, options));
-              else
-                resolve(promise, val);
-            };
-
-            if (promiseInput) {
-              return handlePromiseInput(promise, args, nodeFunc, self);
-            } else {
-              return handleValueInput(promise, args, nodeFunc, self);
-            }
+          args[l] = function(err, val) {
+            if (err)
+              reject(promise, err);
+            else if (options === undefined)
+              resolve(promise, val);
+            else if (options === true)
+              resolve(promise, arrayResult(arguments));
+            else if (isArray(options))
+              resolve(promise, makeObject(arguments, options));
+            else
+              resolve(promise, val);
           };
 
-          fn.__proto__ = nodeFunc;
+          if (promiseInput) {
+            return handlePromiseInput(promise, args, nodeFunc, self);
+          } else {
+            return handleValueInput(promise, args, nodeFunc, self);
+          }
+        };
 
-          return fn;
+        fn.__proto__ = nodeFunc;
+
+        return fn;
+      }
+
+      function handleValueInput(promise, args, nodeFunc, self) {
+        var result = tryApply(nodeFunc, self, args);
+        if (result === ERROR) {
+          reject(promise, result.value);
         }
+        return promise;
+      }
 
-        function handleValueInput(promise, args, nodeFunc, self) {
+      function handlePromiseInput(promise, args, nodeFunc, self){
+        return Promise.all(args).then(function(args){
           var result = tryApply(nodeFunc, self, args);
           if (result === ERROR) {
             reject(promise, result.value);
           }
           return promise;
-        }
+        });
+      }
 
-        function handlePromiseInput(promise, args, nodeFunc, self){
-          return Promise.all(args).then(function(args){
-            var result = tryApply(nodeFunc, self, args);
-            if (result === ERROR) {
-              reject(promise, result.value);
-            }
-            return promise;
-          });
-        }
-
-        function needsPromiseInput(arg) {
-          if (arg && typeof arg === 'object') {
-            if (arg.constructor === Promise) {
-              return true;
-            } else {
-              return getThen(arg);
-            }
+      function needsPromiseInput(arg) {
+        if (arg && typeof arg === 'object') {
+          if (arg.constructor === Promise) {
+            return true;
           } else {
-            return false;
+            return getThen(arg);
           }
+        } else {
+          return false;
         }
-      });
+      }
+    });
   enifed("rsvp/promise-hash",
-      ["./enumerator","./-internal","./utils","exports"],
-      function(__dependency1__, __dependency2__, __dependency3__, __exports__) {
-        "use strict";
-        var Enumerator = __dependency1__["default"];
-        var PENDING = __dependency2__.PENDING;
-        var o_create = __dependency3__.o_create;
+    ["./enumerator","./-internal","./utils","exports"],
+    function(__dependency1__, __dependency2__, __dependency3__, __exports__) {
+      "use strict";
+      var Enumerator = __dependency1__["default"];
+      var PENDING = __dependency2__.PENDING;
+      var o_create = __dependency3__.o_create;
 
-        function PromiseHash(Constructor, object, label) {
-          this._superConstructor(Constructor, object, true, label);
+      function PromiseHash(Constructor, object, label) {
+        this._superConstructor(Constructor, object, true, label);
+      }
+
+      __exports__["default"] = PromiseHash;
+
+      PromiseHash.prototype = o_create(Enumerator.prototype);
+      PromiseHash.prototype._superConstructor = Enumerator;
+      PromiseHash.prototype._init = function() {
+        this._result = {};
+      };
+
+      PromiseHash.prototype._validateInput = function(input) {
+        return input && typeof input === 'object';
+      };
+
+      PromiseHash.prototype._validationError = function() {
+        return new Error('Promise.hash must be called with an object');
+      };
+
+      PromiseHash.prototype._enumerate = function() {
+        var promise = this.promise;
+        var input   = this._input;
+        var results = [];
+
+        for (var key in input) {
+          if (promise._state === PENDING && input.hasOwnProperty(key)) {
+            results.push({
+              position: key,
+              entry: input[key]
+            });
+          }
         }
 
-        __exports__["default"] = PromiseHash;
+        var length = results.length;
+        this._remaining = length;
+        var result;
 
-        PromiseHash.prototype = o_create(Enumerator.prototype);
-        PromiseHash.prototype._superConstructor = Enumerator;
-        PromiseHash.prototype._init = function() {
-          this._result = {};
-        };
-
-        PromiseHash.prototype._validateInput = function(input) {
-          return input && typeof input === 'object';
-        };
-
-        PromiseHash.prototype._validationError = function() {
-          return new Error('Promise.hash must be called with an object');
-        };
-
-        PromiseHash.prototype._enumerate = function() {
-          var promise = this.promise;
-          var input   = this._input;
-          var results = [];
-
-          for (var key in input) {
-            if (promise._state === PENDING && input.hasOwnProperty(key)) {
-              results.push({
-                position: key,
-                entry: input[key]
-              });
-            }
-          }
-
-          var length = results.length;
-          this._remaining = length;
-          var result;
-
-          for (var i = 0; promise._state === PENDING && i < length; i++) {
-            result = results[i];
-            this._eachEntry(result.entry, result.position);
-          }
-        };
-      });
+        for (var i = 0; promise._state === PENDING && i < length; i++) {
+          result = results[i];
+          this._eachEntry(result.entry, result.position);
+        }
+      };
+    });
   enifed("rsvp/promise",
-      ["./config","./instrument","./utils","./-internal","./promise/all","./promise/race","./promise/resolve","./promise/reject","exports"],
-      function(__dependency1__, __dependency2__, __dependency3__, __dependency4__, __dependency5__, __dependency6__, __dependency7__, __dependency8__, __exports__) {
-        "use strict";
-        var config = __dependency1__.config;
-        var instrument = __dependency2__["default"];
+    ["./config","./instrument","./utils","./-internal","./promise/all","./promise/race","./promise/resolve","./promise/reject","exports"],
+    function(__dependency1__, __dependency2__, __dependency3__, __dependency4__, __dependency5__, __dependency6__, __dependency7__, __dependency8__, __exports__) {
+      "use strict";
+      var config = __dependency1__.config;
+      var instrument = __dependency2__["default"];
 
-        var isFunction = __dependency3__.isFunction;
-        var now = __dependency3__.now;
+      var isFunction = __dependency3__.isFunction;
+      var now = __dependency3__.now;
 
-        var noop = __dependency4__.noop;
-        var subscribe = __dependency4__.subscribe;
-        var initializePromise = __dependency4__.initializePromise;
-        var invokeCallback = __dependency4__.invokeCallback;
-        var FULFILLED = __dependency4__.FULFILLED;
-        var REJECTED = __dependency4__.REJECTED;
+      var noop = __dependency4__.noop;
+      var subscribe = __dependency4__.subscribe;
+      var initializePromise = __dependency4__.initializePromise;
+      var invokeCallback = __dependency4__.invokeCallback;
+      var FULFILLED = __dependency4__.FULFILLED;
+      var REJECTED = __dependency4__.REJECTED;
 
-        var all = __dependency5__["default"];
-        var race = __dependency6__["default"];
-        var Resolve = __dependency7__["default"];
-        var Reject = __dependency8__["default"];
+      var all = __dependency5__["default"];
+      var race = __dependency6__["default"];
+      var Resolve = __dependency7__["default"];
+      var Reject = __dependency8__["default"];
 
-        var guidKey = 'rsvp_' + now() + '-';
-        var counter = 0;
+      var guidKey = 'rsvp_' + now() + '-';
+      var counter = 0;
 
-        function needsResolver() {
-          throw new TypeError('You must pass a resolver function as the first argument to the promise constructor');
-        }
+      function needsResolver() {
+        throw new TypeError('You must pass a resolver function as the first argument to the promise constructor');
+      }
 
-        function needsNew() {
-          throw new TypeError("Failed to construct 'Promise': Please use the 'new' operator, this object constructor cannot be called as a function.");
-        }
-        __exports__["default"] = Promise;
-        /**
-         Promise objects represent the eventual result of an asynchronous operation. The
-         primary way of interacting with a promise is through its `then` method, which
-         registers callbacks to receive either a promiseâs eventual value or the reason
-         why the promise cannot be fulfilled.
+      function needsNew() {
+        throw new TypeError("Failed to construct 'Promise': Please use the 'new' operator, this object constructor cannot be called as a function.");
+      }
+      __exports__["default"] = Promise;
+      /**
+       Promise objects represent the eventual result of an asynchronous operation. The
+       primary way of interacting with a promise is through its `then` method, which
+       registers callbacks to receive either a promise’s eventual value or the reason
+       why the promise cannot be fulfilled.
 
-         Terminology
-         -----------
+       Terminology
+       -----------
 
-         - `promise` is an object or function with a `then` method whose behavior conforms to this specification.
-         - `thenable` is an object or function that defines a `then` method.
-         - `value` is any legal JavaScript value (including undefined, a thenable, or a promise).
-         - `exception` is a value that is thrown using the throw statement.
-         - `reason` is a value that indicates why a promise was rejected.
-         - `settled` the final resting state of a promise, fulfilled or rejected.
+       - `promise` is an object or function with a `then` method whose behavior conforms to this specification.
+       - `thenable` is an object or function that defines a `then` method.
+       - `value` is any legal JavaScript value (including undefined, a thenable, or a promise).
+       - `exception` is a value that is thrown using the throw statement.
+       - `reason` is a value that indicates why a promise was rejected.
+       - `settled` the final resting state of a promise, fulfilled or rejected.
 
-         A promise can be in one of three states: pending, fulfilled, or rejected.
+       A promise can be in one of three states: pending, fulfilled, or rejected.
 
-         Promises that are fulfilled have a fulfillment value and are in the fulfilled
-         state.  Promises that are rejected have a rejection reason and are in the
-         rejected state.  A fulfillment value is never a thenable.
+       Promises that are fulfilled have a fulfillment value and are in the fulfilled
+       state.  Promises that are rejected have a rejection reason and are in the
+       rejected state.  A fulfillment value is never a thenable.
 
-         Promises can also be said to *resolve* a value.  If this value is also a
-         promise, then the original promise's settled state will match the value's
-         settled state.  So a promise that *resolves* a promise that rejects will
-         itself reject, and a promise that *resolves* a promise that fulfills will
-         itself fulfill.
+       Promises can also be said to *resolve* a value.  If this value is also a
+       promise, then the original promise's settled state will match the value's
+       settled state.  So a promise that *resolves* a promise that rejects will
+       itself reject, and a promise that *resolves* a promise that fulfills will
+       itself fulfill.
 
 
-         Basic Usage:
-         ------------
+       Basic Usage:
+       ------------
 
-         ```js
-         var promise = new Promise(function(resolve, reject) {
+       ```js
+       var promise = new Promise(function(resolve, reject) {
         // on success
         resolve(value);
 
@@ -47071,21 +47071,21 @@
         reject(reason);
       });
 
-         promise.then(function(value) {
+       promise.then(function(value) {
         // on fulfillment
       }, function(reason) {
         // on rejection
       });
-         ```
+       ```
 
-         Advanced Usage:
-         ---------------
+       Advanced Usage:
+       ---------------
 
-         Promises shine when abstracting away asynchronous interactions such as
-         `XMLHttpRequest`s.
+       Promises shine when abstracting away asynchronous interactions such as
+       `XMLHttpRequest`s.
 
-         ```js
-         function getJSON(url) {
+       ```js
+       function getJSON(url) {
         return new Promise(function(resolve, reject){
           var xhr = new XMLHttpRequest();
 
@@ -47107,94 +47107,94 @@
         });
       }
 
-         getJSON('/posts.json').then(function(json) {
+       getJSON('/posts.json').then(function(json) {
         // on fulfillment
       }, function(reason) {
         // on rejection
       });
-         ```
+       ```
 
-         Unlike callbacks, promises are great composable primitives.
+       Unlike callbacks, promises are great composable primitives.
 
-         ```js
-         Promise.all([
-         getJSON('/posts'),
-         getJSON('/comments')
-         ]).then(function(values){
+       ```js
+       Promise.all([
+       getJSON('/posts'),
+       getJSON('/comments')
+       ]).then(function(values){
         values[0] // => postsJSON
         values[1] // => commentsJSON
 
         return values;
       });
-         ```
+       ```
 
-         @class RSVP.Promise
-         @param {function} resolver
-         @param {String} label optional string for labeling the promise.
-         Useful for tooling.
-         @constructor
-         */
-        function Promise(resolver, label) {
-          this._id = counter++;
-          this._label = label;
-          this._state = undefined;
-          this._result = undefined;
-          this._subscribers = [];
+       @class RSVP.Promise
+       @param {function} resolver
+       @param {String} label optional string for labeling the promise.
+       Useful for tooling.
+       @constructor
+       */
+      function Promise(resolver, label) {
+        this._id = counter++;
+        this._label = label;
+        this._state = undefined;
+        this._result = undefined;
+        this._subscribers = [];
 
-          if (config.instrument) {
-            instrument('created', this);
-          }
-
-          if (noop !== resolver) {
-            if (!isFunction(resolver)) {
-              needsResolver();
-            }
-
-            if (!(this instanceof Promise)) {
-              needsNew();
-            }
-
-            initializePromise(this, resolver);
-          }
+        if (config.instrument) {
+          instrument('created', this);
         }
 
-        Promise.cast = Resolve; // deprecated
-        Promise.all = all;
-        Promise.race = race;
-        Promise.resolve = Resolve;
-        Promise.reject = Reject;
+        if (noop !== resolver) {
+          if (!isFunction(resolver)) {
+            needsResolver();
+          }
 
-        Promise.prototype = {
-          constructor: Promise,
+          if (!(this instanceof Promise)) {
+            needsNew();
+          }
 
-          _guidKey: guidKey,
+          initializePromise(this, resolver);
+        }
+      }
 
-          _onerror: function (reason) {
-            config.trigger('error', reason);
-          },
+      Promise.cast = Resolve; // deprecated
+      Promise.all = all;
+      Promise.race = race;
+      Promise.resolve = Resolve;
+      Promise.reject = Reject;
 
-          /**
-           The primary way of interacting with a promise is through its `then` method,
-           which registers callbacks to receive either a promise's eventual value or the
-           reason why the promise cannot be fulfilled.
+      Promise.prototype = {
+        constructor: Promise,
 
-           ```js
-           findUser().then(function(user){
+        _guidKey: guidKey,
+
+        _onerror: function (reason) {
+          config.trigger('error', reason);
+        },
+
+        /**
+         The primary way of interacting with a promise is through its `then` method,
+         which registers callbacks to receive either a promise's eventual value or the
+         reason why the promise cannot be fulfilled.
+
+         ```js
+         findUser().then(function(user){
         // user is available
       }, function(reason){
         // user is unavailable, and you are given the reason why
       });
-           ```
+         ```
 
-           Chaining
-           --------
+         Chaining
+         --------
 
-           The return value of `then` is itself a promise.  This second, 'downstream'
-           promise is resolved with the return value of the first promise's fulfillment
-           or rejection handler, or rejected if the handler throws an exception.
+         The return value of `then` is itself a promise.  This second, 'downstream'
+         promise is resolved with the return value of the first promise's fulfillment
+         or rejection handler, or rejected if the handler throws an exception.
 
-           ```js
-           findUser().then(function (user) {
+         ```js
+         findUser().then(function (user) {
         return user.name;
       }, function (reason) {
         return 'default name';
@@ -47203,7 +47203,7 @@
         // will be `'default name'`
       });
 
-           findUser().then(function (user) {
+         findUser().then(function (user) {
         throw new Error('Found user, but still unhappy');
       }, function (reason) {
         throw new Error('`findUser` rejected and we're unhappy');
@@ -47213,11 +47213,11 @@
         // if `findUser` fulfilled, `reason` will be 'Found user, but still unhappy'.
         // If `findUser` rejected, `reason` will be '`findUser` rejected and we're unhappy'.
       });
-           ```
-           If the downstream promise does not specify a rejection handler, rejection reasons will be propagated further downstream.
+         ```
+         If the downstream promise does not specify a rejection handler, rejection reasons will be propagated further downstream.
 
-           ```js
-           findUser().then(function (user) {
+         ```js
+         findUser().then(function (user) {
         throw new PedagogicalException('Upstream error');
       }).then(function (value) {
         // never reached
@@ -47226,104 +47226,104 @@
       }, function (reason) {
         // The `PedgagocialException` is propagated all the way down to here
       });
-           ```
+         ```
 
-           Assimilation
-           ------------
+         Assimilation
+         ------------
 
-           Sometimes the value you want to propagate to a downstream promise can only be
-           retrieved asynchronously. This can be achieved by returning a promise in the
-           fulfillment or rejection handler. The downstream promise will then be pending
-           until the returned promise is settled. This is called *assimilation*.
+         Sometimes the value you want to propagate to a downstream promise can only be
+         retrieved asynchronously. This can be achieved by returning a promise in the
+         fulfillment or rejection handler. The downstream promise will then be pending
+         until the returned promise is settled. This is called *assimilation*.
 
-           ```js
-           findUser().then(function (user) {
+         ```js
+         findUser().then(function (user) {
         return findCommentsByAuthor(user);
       }).then(function (comments) {
         // The user's comments are now available
       });
-           ```
+         ```
 
-           If the assimliated promise rejects, then the downstream promise will also reject.
+         If the assimliated promise rejects, then the downstream promise will also reject.
 
-           ```js
-           findUser().then(function (user) {
+         ```js
+         findUser().then(function (user) {
         return findCommentsByAuthor(user);
       }).then(function (comments) {
         // If `findCommentsByAuthor` fulfills, we'll have the value here
       }, function (reason) {
         // If `findCommentsByAuthor` rejects, we'll have the reason here
       });
-           ```
+         ```
 
-           Simple Example
-           --------------
+         Simple Example
+         --------------
 
-           Synchronous Example
+         Synchronous Example
 
-           ```javascript
-           var result;
+         ```javascript
+         var result;
 
-           try {
+         try {
         result = findResult();
         // success
       } catch(reason) {
         // failure
       }
-           ```
+         ```
 
-           Errback Example
+         Errback Example
 
-           ```js
-           findResult(function(result, err){
+         ```js
+         findResult(function(result, err){
         if (err) {
           // failure
         } else {
           // success
         }
       });
-           ```
+         ```
 
-           Promise Example;
+         Promise Example;
 
-           ```javascript
-           findResult().then(function(result){
+         ```javascript
+         findResult().then(function(result){
         // success
       }, function(reason){
         // failure
       });
-           ```
+         ```
 
-           Advanced Example
-           --------------
+         Advanced Example
+         --------------
 
-           Synchronous Example
+         Synchronous Example
 
-           ```javascript
-           var author, books;
+         ```javascript
+         var author, books;
 
-           try {
+         try {
         author = findAuthor();
         books  = findBooksByAuthor(author);
         // success
       } catch(reason) {
         // failure
       }
-           ```
+         ```
 
-           Errback Example
+         Errback Example
 
-           ```js
+         ```js
 
-           function foundBooks(books) {
-
-      }
-
-           function failure(reason) {
+         function foundBooks(books) {
 
       }
 
-           findAuthor(function(author, err){
+         function failure(reason) {
+
+      }
+
+         findAuthor(function(author, err){
         if (err) {
           failure(err);
           // failure
@@ -47346,106 +47346,106 @@
           // success
         }
       });
-           ```
+         ```
 
-           Promise Example;
+         Promise Example;
 
-           ```javascript
-           findAuthor().
-           then(findBooksByAuthor).
-           then(function(books){
+         ```javascript
+         findAuthor().
+         then(findBooksByAuthor).
+         then(function(books){
           // found books
       }).catch(function(reason){
         // something went wrong
       });
-           ```
+         ```
 
-           @method then
-           @param {Function} onFulfilled
-           @param {Function} onRejected
-           @param {String} label optional string for labeling the promise.
-           Useful for tooling.
-           @return {Promise}
-           */
-          then: function(onFulfillment, onRejection, label) {
-            var parent = this;
-            var state = parent._state;
+         @method then
+         @param {Function} onFulfilled
+         @param {Function} onRejected
+         @param {String} label optional string for labeling the promise.
+         Useful for tooling.
+         @return {Promise}
+         */
+        then: function(onFulfillment, onRejection, label) {
+          var parent = this;
+          var state = parent._state;
 
-            if (state === FULFILLED && !onFulfillment || state === REJECTED && !onRejection) {
-              if (config.instrument) {
-                instrument('chained', this, this);
-              }
-              return this;
-            }
-
-            parent._onerror = null;
-
-            var child = new this.constructor(noop, label);
-            var result = parent._result;
-
+          if (state === FULFILLED && !onFulfillment || state === REJECTED && !onRejection) {
             if (config.instrument) {
-              instrument('chained', parent, child);
+              instrument('chained', this, this);
             }
+            return this;
+          }
 
-            if (state) {
-              var callback = arguments[state - 1];
-              config.async(function(){
-                invokeCallback(state, child, callback, result);
-              });
-            } else {
-              subscribe(parent, child, onFulfillment, onRejection);
-            }
+          parent._onerror = null;
 
-            return child;
-          },
+          var child = new this.constructor(noop, label);
+          var result = parent._result;
 
-          /**
-           `catch` is simply sugar for `then(undefined, onRejection)` which makes it the same
-           as the catch block of a try/catch statement.
+          if (config.instrument) {
+            instrument('chained', parent, child);
+          }
 
-           ```js
-           function findAuthor(){
+          if (state) {
+            var callback = arguments[state - 1];
+            config.async(function(){
+              invokeCallback(state, child, callback, result);
+            });
+          } else {
+            subscribe(parent, child, onFulfillment, onRejection);
+          }
+
+          return child;
+        },
+
+        /**
+         `catch` is simply sugar for `then(undefined, onRejection)` which makes it the same
+         as the catch block of a try/catch statement.
+
+         ```js
+         function findAuthor(){
         throw new Error('couldn't find that author');
       }
 
-           // synchronous
-           try {
+         // synchronous
+         try {
         findAuthor();
       } catch(reason) {
         // something went wrong
       }
 
-           // async with promises
-           findAuthor().catch(function(reason){
+         // async with promises
+         findAuthor().catch(function(reason){
         // something went wrong
       });
-           ```
+         ```
 
-           @method catch
-           @param {Function} onRejection
-           @param {String} label optional string for labeling the promise.
-           Useful for tooling.
-           @return {Promise}
-           */
-          'catch': function(onRejection, label) {
-            return this.then(null, onRejection, label);
-          },
+         @method catch
+         @param {Function} onRejection
+         @param {String} label optional string for labeling the promise.
+         Useful for tooling.
+         @return {Promise}
+         */
+        'catch': function(onRejection, label) {
+          return this.then(null, onRejection, label);
+        },
 
-          /**
-           `finally` will be invoked regardless of the promise's fate just as native
-           try/catch/finally behaves
+        /**
+         `finally` will be invoked regardless of the promise's fate just as native
+         try/catch/finally behaves
 
-           Synchronous example:
+         Synchronous example:
 
-           ```js
-           findAuthor() {
+         ```js
+         findAuthor() {
         if (Math.random() > 0.5) {
           throw new Error();
         }
         return new Author();
       }
 
-           try {
+         try {
         return findAuthor(); // succeed or fail
       } catch(error) {
         return findOtherAuther();
@@ -47453,463 +47453,463 @@
         // always runs
         // doesn't affect the return value
       }
-           ```
+         ```
 
-           Asynchronous example:
+         Asynchronous example:
 
-           ```js
-           findAuthor().catch(function(reason){
+         ```js
+         findAuthor().catch(function(reason){
         return findOtherAuther();
       }).finally(function(){
         // author was either found, or not
       });
-           ```
-
-           @method finally
-           @param {Function} callback
-           @param {String} label optional string for labeling the promise.
-           Useful for tooling.
-           @return {Promise}
-           */
-          'finally': function(callback, label) {
-            var constructor = this.constructor;
-
-            return this.then(function(value) {
-              return constructor.resolve(callback()).then(function(){
-                return value;
-              });
-            }, function(reason) {
-              return constructor.resolve(callback()).then(function(){
-                throw reason;
-              });
-            }, label);
-          }
-        };
-      });
-  enifed("rsvp/promise/all",
-      ["../enumerator","exports"],
-      function(__dependency1__, __exports__) {
-        "use strict";
-        var Enumerator = __dependency1__["default"];
-
-        /**
-         `RSVP.Promise.all` accepts an array of promises, and returns a new promise which
-         is fulfilled with an array of fulfillment values for the passed promises, or
-         rejected with the reason of the first passed promise to be rejected. It casts all
-         elements of the passed iterable to promises as it runs this algorithm.
-
-         Example:
-
-         ```javascript
-         var promise1 = RSVP.resolve(1);
-         var promise2 = RSVP.resolve(2);
-         var promise3 = RSVP.resolve(3);
-         var promises = [ promise1, promise2, promise3 ];
-
-         RSVP.Promise.all(promises).then(function(array){
-        // The array here would be [ 1, 2, 3 ];
-      });
          ```
 
-         If any of the `promises` given to `RSVP.all` are rejected, the first promise
-         that is rejected will be given as an argument to the returned promises's
-         rejection handler. For example:
+         @method finally
+         @param {Function} callback
+         @param {String} label optional string for labeling the promise.
+         Useful for tooling.
+         @return {Promise}
+         */
+        'finally': function(callback, label) {
+          var constructor = this.constructor;
 
-         Example:
+          return this.then(function(value) {
+            return constructor.resolve(callback()).then(function(){
+              return value;
+            });
+          }, function(reason) {
+            return constructor.resolve(callback()).then(function(){
+              throw reason;
+            });
+          }, label);
+        }
+      };
+    });
+  enifed("rsvp/promise/all",
+    ["../enumerator","exports"],
+    function(__dependency1__, __exports__) {
+      "use strict";
+      var Enumerator = __dependency1__["default"];
 
-         ```javascript
-         var promise1 = RSVP.resolve(1);
-         var promise2 = RSVP.reject(new Error("2"));
-         var promise3 = RSVP.reject(new Error("3"));
-         var promises = [ promise1, promise2, promise3 ];
+      /**
+       `RSVP.Promise.all` accepts an array of promises, and returns a new promise which
+       is fulfilled with an array of fulfillment values for the passed promises, or
+       rejected with the reason of the first passed promise to be rejected. It casts all
+       elements of the passed iterable to promises as it runs this algorithm.
 
-         RSVP.Promise.all(promises).then(function(array){
+       Example:
+
+       ```javascript
+       var promise1 = RSVP.resolve(1);
+       var promise2 = RSVP.resolve(2);
+       var promise3 = RSVP.resolve(3);
+       var promises = [ promise1, promise2, promise3 ];
+
+       RSVP.Promise.all(promises).then(function(array){
+        // The array here would be [ 1, 2, 3 ];
+      });
+       ```
+
+       If any of the `promises` given to `RSVP.all` are rejected, the first promise
+       that is rejected will be given as an argument to the returned promises's
+       rejection handler. For example:
+
+       Example:
+
+       ```javascript
+       var promise1 = RSVP.resolve(1);
+       var promise2 = RSVP.reject(new Error("2"));
+       var promise3 = RSVP.reject(new Error("3"));
+       var promises = [ promise1, promise2, promise3 ];
+
+       RSVP.Promise.all(promises).then(function(array){
         // Code here never runs because there are rejected promises!
       }, function(error) {
         // error.message === "2"
       });
-         ```
+       ```
 
-         @method all
-         @static
-         @param {Array} entries array of promises
-         @param {String} label optional string for labeling the promise.
-         Useful for tooling.
-         @return {Promise} promise that is fulfilled when all `promises` have been
-         fulfilled, or rejected if any of them become rejected.
-         @static
-         */
-        __exports__["default"] = function all(entries, label) {
-          return new Enumerator(this, entries, true /* abort on reject */, label).promise;
-        }
-      });
+       @method all
+       @static
+       @param {Array} entries array of promises
+       @param {String} label optional string for labeling the promise.
+       Useful for tooling.
+       @return {Promise} promise that is fulfilled when all `promises` have been
+       fulfilled, or rejected if any of them become rejected.
+       @static
+       */
+      __exports__["default"] = function all(entries, label) {
+        return new Enumerator(this, entries, true /* abort on reject */, label).promise;
+      }
+    });
   enifed("rsvp/promise/race",
-      ["../utils","../-internal","exports"],
-      function(__dependency1__, __dependency2__, __exports__) {
-        "use strict";
-        var isArray = __dependency1__.isArray;
+    ["../utils","../-internal","exports"],
+    function(__dependency1__, __dependency2__, __exports__) {
+      "use strict";
+      var isArray = __dependency1__.isArray;
 
-        var noop = __dependency2__.noop;
-        var resolve = __dependency2__.resolve;
-        var reject = __dependency2__.reject;
-        var subscribe = __dependency2__.subscribe;
-        var PENDING = __dependency2__.PENDING;
+      var noop = __dependency2__.noop;
+      var resolve = __dependency2__.resolve;
+      var reject = __dependency2__.reject;
+      var subscribe = __dependency2__.subscribe;
+      var PENDING = __dependency2__.PENDING;
 
-        /**
-         `RSVP.Promise.race` returns a new promise which is settled in the same way as the
-         first passed promise to settle.
+      /**
+       `RSVP.Promise.race` returns a new promise which is settled in the same way as the
+       first passed promise to settle.
 
-         Example:
+       Example:
 
-         ```javascript
-         var promise1 = new RSVP.Promise(function(resolve, reject){
+       ```javascript
+       var promise1 = new RSVP.Promise(function(resolve, reject){
         setTimeout(function(){
           resolve('promise 1');
         }, 200);
       });
 
-         var promise2 = new RSVP.Promise(function(resolve, reject){
+       var promise2 = new RSVP.Promise(function(resolve, reject){
         setTimeout(function(){
           resolve('promise 2');
         }, 100);
       });
 
-         RSVP.Promise.race([promise1, promise2]).then(function(result){
+       RSVP.Promise.race([promise1, promise2]).then(function(result){
         // result === 'promise 2' because it was resolved before promise1
         // was resolved.
       });
-         ```
+       ```
 
-         `RSVP.Promise.race` is deterministic in that only the state of the first
-         settled promise matters. For example, even if other promises given to the
-         `promises` array argument are resolved, but the first settled promise has
-         become rejected before the other promises became fulfilled, the returned
-         promise will become rejected:
+       `RSVP.Promise.race` is deterministic in that only the state of the first
+       settled promise matters. For example, even if other promises given to the
+       `promises` array argument are resolved, but the first settled promise has
+       become rejected before the other promises became fulfilled, the returned
+       promise will become rejected:
 
-         ```javascript
-         var promise1 = new RSVP.Promise(function(resolve, reject){
+       ```javascript
+       var promise1 = new RSVP.Promise(function(resolve, reject){
         setTimeout(function(){
           resolve('promise 1');
         }, 200);
       });
 
-         var promise2 = new RSVP.Promise(function(resolve, reject){
+       var promise2 = new RSVP.Promise(function(resolve, reject){
         setTimeout(function(){
           reject(new Error('promise 2'));
         }, 100);
       });
 
-         RSVP.Promise.race([promise1, promise2]).then(function(result){
+       RSVP.Promise.race([promise1, promise2]).then(function(result){
         // Code here never runs
       }, function(reason){
         // reason.message === 'promise 2' because promise 2 became rejected before
         // promise 1 became fulfilled
       });
-         ```
+       ```
 
-         An example real-world use case is implementing timeouts:
+       An example real-world use case is implementing timeouts:
 
-         ```javascript
-         RSVP.Promise.race([ajax('foo.json'), timeout(5000)])
-         ```
+       ```javascript
+       RSVP.Promise.race([ajax('foo.json'), timeout(5000)])
+       ```
 
-         @method race
-         @static
-         @param {Array} promises array of promises to observe
-         @param {String} label optional string for describing the promise returned.
-         Useful for tooling.
-         @return {Promise} a promise which settles in the same way as the first passed
-         promise to settle.
-         */
-        __exports__["default"] = function race(entries, label) {
-          /*jshint validthis:true */
-          var Constructor = this;
+       @method race
+       @static
+       @param {Array} promises array of promises to observe
+       @param {String} label optional string for describing the promise returned.
+       Useful for tooling.
+       @return {Promise} a promise which settles in the same way as the first passed
+       promise to settle.
+       */
+      __exports__["default"] = function race(entries, label) {
+        /*jshint validthis:true */
+        var Constructor = this;
 
-          var promise = new Constructor(noop, label);
+        var promise = new Constructor(noop, label);
 
-          if (!isArray(entries)) {
-            reject(promise, new TypeError('You must pass an array to race.'));
-            return promise;
-          }
-
-          var length = entries.length;
-
-          function onFulfillment(value) {
-            resolve(promise, value);
-          }
-
-          function onRejection(reason) {
-            reject(promise, reason);
-          }
-
-          for (var i = 0; promise._state === PENDING && i < length; i++) {
-            subscribe(Constructor.resolve(entries[i]), undefined, onFulfillment, onRejection);
-          }
-
+        if (!isArray(entries)) {
+          reject(promise, new TypeError('You must pass an array to race.'));
           return promise;
         }
-      });
+
+        var length = entries.length;
+
+        function onFulfillment(value) {
+          resolve(promise, value);
+        }
+
+        function onRejection(reason) {
+          reject(promise, reason);
+        }
+
+        for (var i = 0; promise._state === PENDING && i < length; i++) {
+          subscribe(Constructor.resolve(entries[i]), undefined, onFulfillment, onRejection);
+        }
+
+        return promise;
+      }
+    });
   enifed("rsvp/promise/reject",
-      ["../-internal","exports"],
-      function(__dependency1__, __exports__) {
-        "use strict";
-        var noop = __dependency1__.noop;
-        var _reject = __dependency1__.reject;
+    ["../-internal","exports"],
+    function(__dependency1__, __exports__) {
+      "use strict";
+      var noop = __dependency1__.noop;
+      var _reject = __dependency1__.reject;
 
-        /**
-         `RSVP.Promise.reject` returns a promise rejected with the passed `reason`.
-         It is shorthand for the following:
+      /**
+       `RSVP.Promise.reject` returns a promise rejected with the passed `reason`.
+       It is shorthand for the following:
 
-         ```javascript
-         var promise = new RSVP.Promise(function(resolve, reject){
+       ```javascript
+       var promise = new RSVP.Promise(function(resolve, reject){
         reject(new Error('WHOOPS'));
       });
 
-         promise.then(function(value){
+       promise.then(function(value){
         // Code here doesn't run because the promise is rejected!
       }, function(reason){
         // reason.message === 'WHOOPS'
       });
-         ```
+       ```
 
-         Instead of writing the above, your code now simply becomes the following:
+       Instead of writing the above, your code now simply becomes the following:
 
-         ```javascript
-         var promise = RSVP.Promise.reject(new Error('WHOOPS'));
+       ```javascript
+       var promise = RSVP.Promise.reject(new Error('WHOOPS'));
 
-         promise.then(function(value){
+       promise.then(function(value){
         // Code here doesn't run because the promise is rejected!
       }, function(reason){
         // reason.message === 'WHOOPS'
       });
-         ```
+       ```
 
-         @method reject
-         @static
-         @param {Any} reason value that the returned promise will be rejected with.
-         @param {String} label optional string for identifying the returned promise.
-         Useful for tooling.
-         @return {Promise} a promise rejected with the given `reason`.
-         */
-        __exports__["default"] = function reject(reason, label) {
-          /*jshint validthis:true */
-          var Constructor = this;
-          var promise = new Constructor(noop, label);
-          _reject(promise, reason);
-          return promise;
-        }
-      });
+       @method reject
+       @static
+       @param {Any} reason value that the returned promise will be rejected with.
+       @param {String} label optional string for identifying the returned promise.
+       Useful for tooling.
+       @return {Promise} a promise rejected with the given `reason`.
+       */
+      __exports__["default"] = function reject(reason, label) {
+        /*jshint validthis:true */
+        var Constructor = this;
+        var promise = new Constructor(noop, label);
+        _reject(promise, reason);
+        return promise;
+      }
+    });
   enifed("rsvp/promise/resolve",
-      ["../-internal","exports"],
-      function(__dependency1__, __exports__) {
-        "use strict";
-        var noop = __dependency1__.noop;
-        var _resolve = __dependency1__.resolve;
+    ["../-internal","exports"],
+    function(__dependency1__, __exports__) {
+      "use strict";
+      var noop = __dependency1__.noop;
+      var _resolve = __dependency1__.resolve;
 
-        /**
-         `RSVP.Promise.resolve` returns a promise that will become resolved with the
-         passed `value`. It is shorthand for the following:
+      /**
+       `RSVP.Promise.resolve` returns a promise that will become resolved with the
+       passed `value`. It is shorthand for the following:
 
-         ```javascript
-         var promise = new RSVP.Promise(function(resolve, reject){
+       ```javascript
+       var promise = new RSVP.Promise(function(resolve, reject){
         resolve(1);
       });
 
-         promise.then(function(value){
+       promise.then(function(value){
         // value === 1
       });
-         ```
+       ```
 
-         Instead of writing the above, your code now simply becomes the following:
+       Instead of writing the above, your code now simply becomes the following:
 
-         ```javascript
-         var promise = RSVP.Promise.resolve(1);
+       ```javascript
+       var promise = RSVP.Promise.resolve(1);
 
-         promise.then(function(value){
+       promise.then(function(value){
         // value === 1
       });
-         ```
+       ```
 
-         @method resolve
-         @static
-         @param {Any} value value that the returned promise will be resolved with
-         @param {String} label optional string for identifying the returned promise.
-         Useful for tooling.
-         @return {Promise} a promise that will become fulfilled with the given
-         `value`
-         */
-        __exports__["default"] = function resolve(object, label) {
-          /*jshint validthis:true */
-          var Constructor = this;
+       @method resolve
+       @static
+       @param {Any} value value that the returned promise will be resolved with
+       @param {String} label optional string for identifying the returned promise.
+       Useful for tooling.
+       @return {Promise} a promise that will become fulfilled with the given
+       `value`
+       */
+      __exports__["default"] = function resolve(object, label) {
+        /*jshint validthis:true */
+        var Constructor = this;
 
-          if (object && typeof object === 'object' && object.constructor === Constructor) {
-            return object;
-          }
-
-          var promise = new Constructor(noop, label);
-          _resolve(promise, object);
-          return promise;
+        if (object && typeof object === 'object' && object.constructor === Constructor) {
+          return object;
         }
-      });
+
+        var promise = new Constructor(noop, label);
+        _resolve(promise, object);
+        return promise;
+      }
+    });
   enifed("rsvp/race",
-      ["./promise","exports"],
-      function(__dependency1__, __exports__) {
-        "use strict";
-        var Promise = __dependency1__["default"];
+    ["./promise","exports"],
+    function(__dependency1__, __exports__) {
+      "use strict";
+      var Promise = __dependency1__["default"];
 
-        /**
-         This is a convenient alias for `RSVP.Promise.race`.
+      /**
+       This is a convenient alias for `RSVP.Promise.race`.
 
-         @method race
-         @static
-         @for RSVP
-         @param {Array} array Array of promises.
-         @param {String} label An optional label. This is useful
-         for tooling.
-         */
-        __exports__["default"] = function race(array, label) {
-          return Promise.race(array, label);
-        }
-      });
+       @method race
+       @static
+       @for RSVP
+       @param {Array} array Array of promises.
+       @param {String} label An optional label. This is useful
+       for tooling.
+       */
+      __exports__["default"] = function race(array, label) {
+        return Promise.race(array, label);
+      }
+    });
   enifed("rsvp/reject",
-      ["./promise","exports"],
-      function(__dependency1__, __exports__) {
-        "use strict";
-        var Promise = __dependency1__["default"];
+    ["./promise","exports"],
+    function(__dependency1__, __exports__) {
+      "use strict";
+      var Promise = __dependency1__["default"];
 
-        /**
-         This is a convenient alias for `RSVP.Promise.reject`.
+      /**
+       This is a convenient alias for `RSVP.Promise.reject`.
 
-         @method reject
-         @static
-         @for RSVP
-         @param {Any} reason value that the returned promise will be rejected with.
-         @param {String} label optional string for identifying the returned promise.
-         Useful for tooling.
-         @return {Promise} a promise rejected with the given `reason`.
-         */
-        __exports__["default"] = function reject(reason, label) {
-          return Promise.reject(reason, label);
-        }
-      });
+       @method reject
+       @static
+       @for RSVP
+       @param {Any} reason value that the returned promise will be rejected with.
+       @param {String} label optional string for identifying the returned promise.
+       Useful for tooling.
+       @return {Promise} a promise rejected with the given `reason`.
+       */
+      __exports__["default"] = function reject(reason, label) {
+        return Promise.reject(reason, label);
+      }
+    });
   enifed("rsvp/resolve",
-      ["./promise","exports"],
-      function(__dependency1__, __exports__) {
-        "use strict";
-        var Promise = __dependency1__["default"];
+    ["./promise","exports"],
+    function(__dependency1__, __exports__) {
+      "use strict";
+      var Promise = __dependency1__["default"];
 
-        /**
-         This is a convenient alias for `RSVP.Promise.resolve`.
+      /**
+       This is a convenient alias for `RSVP.Promise.resolve`.
 
-         @method resolve
-         @static
-         @for RSVP
-         @param {Any} value value that the returned promise will be resolved with
-         @param {String} label optional string for identifying the returned promise.
-         Useful for tooling.
-         @return {Promise} a promise that will become fulfilled with the given
-         `value`
-         */
-        __exports__["default"] = function resolve(value, label) {
-          return Promise.resolve(value, label);
-        }
-      });
+       @method resolve
+       @static
+       @for RSVP
+       @param {Any} value value that the returned promise will be resolved with
+       @param {String} label optional string for identifying the returned promise.
+       Useful for tooling.
+       @return {Promise} a promise that will become fulfilled with the given
+       `value`
+       */
+      __exports__["default"] = function resolve(value, label) {
+        return Promise.resolve(value, label);
+      }
+    });
   enifed("rsvp/rethrow",
-      ["exports"],
-      function(__exports__) {
-        "use strict";
-        /**
-         `RSVP.rethrow` will rethrow an error on the next turn of the JavaScript event
-         loop in order to aid debugging.
+    ["exports"],
+    function(__exports__) {
+      "use strict";
+      /**
+       `RSVP.rethrow` will rethrow an error on the next turn of the JavaScript event
+       loop in order to aid debugging.
 
-         Promises A+ specifies that any exceptions that occur with a promise must be
-         caught by the promises implementation and bubbled to the last handler. For
-         this reason, it is recommended that you always specify a second rejection
-         handler function to `then`. However, `RSVP.rethrow` will throw the exception
-         outside of the promise, so it bubbles up to your console if in the browser,
-         or domain/cause uncaught exception in Node. `rethrow` will also throw the
-         error again so the error can be handled by the promise per the spec.
+       Promises A+ specifies that any exceptions that occur with a promise must be
+       caught by the promises implementation and bubbled to the last handler. For
+       this reason, it is recommended that you always specify a second rejection
+       handler function to `then`. However, `RSVP.rethrow` will throw the exception
+       outside of the promise, so it bubbles up to your console if in the browser,
+       or domain/cause uncaught exception in Node. `rethrow` will also throw the
+       error again so the error can be handled by the promise per the spec.
 
-         ```javascript
-         function throws(){
+       ```javascript
+       function throws(){
         throw new Error('Whoops!');
       }
 
-         var promise = new RSVP.Promise(function(resolve, reject){
+       var promise = new RSVP.Promise(function(resolve, reject){
         throws();
       });
 
-         promise.catch(RSVP.rethrow).then(function(){
+       promise.catch(RSVP.rethrow).then(function(){
         // Code here doesn't run because the promise became rejected due to an
         // error!
       }, function (err){
         // handle the error here
       });
-         ```
+       ```
 
-         The 'Whoops' error will be thrown on the next turn of the event loop
-         and you can watch for it in your console. You can also handle it using a
-         rejection handler given to `.then` or `.catch` on the returned promise.
+       The 'Whoops' error will be thrown on the next turn of the event loop
+       and you can watch for it in your console. You can also handle it using a
+       rejection handler given to `.then` or `.catch` on the returned promise.
 
-         @method rethrow
-         @static
-         @for RSVP
-         @param {Error} reason reason the promise became rejected.
-         @throws Error
-         @static
-         */
-        __exports__["default"] = function rethrow(reason) {
-          setTimeout(function() {
-            throw reason;
-          });
+       @method rethrow
+       @static
+       @for RSVP
+       @param {Error} reason reason the promise became rejected.
+       @throws Error
+       @static
+       */
+      __exports__["default"] = function rethrow(reason) {
+        setTimeout(function() {
           throw reason;
-        }
-      });
-  enifed("rsvp/utils",
-      ["exports"],
-      function(__exports__) {
-        "use strict";
-        function objectOrFunction(x) {
-          return typeof x === 'function' || (typeof x === 'object' && x !== null);
-        }
-
-        __exports__.objectOrFunction = objectOrFunction;function isFunction(x) {
-          return typeof x === 'function';
-        }
-
-        __exports__.isFunction = isFunction;function isMaybeThenable(x) {
-          return typeof x === 'object' && x !== null;
-        }
-
-        __exports__.isMaybeThenable = isMaybeThenable;var _isArray;
-        if (!Array.isArray) {
-          _isArray = function (x) {
-            return Object.prototype.toString.call(x) === '[object Array]';
-          };
-        } else {
-          _isArray = Array.isArray;
-        }
-
-        var isArray = _isArray;
-        __exports__.isArray = isArray;
-        // Date.now is not available in browsers < IE9
-        // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Date/now#Compatibility
-        var now = Date.now || function() { return new Date().getTime(); };
-        __exports__.now = now;
-        function F() { }
-
-        var o_create = (Object.create || function (o) {
-          if (arguments.length > 1) {
-            throw new Error('Second argument not supported');
-          }
-          if (typeof o !== 'object') {
-            throw new TypeError('Argument must be an object');
-          }
-          F.prototype = o;
-          return new F();
         });
-        __exports__.o_create = o_create;
+        throw reason;
+      }
+    });
+  enifed("rsvp/utils",
+    ["exports"],
+    function(__exports__) {
+      "use strict";
+      function objectOrFunction(x) {
+        return typeof x === 'function' || (typeof x === 'object' && x !== null);
+      }
+
+      __exports__.objectOrFunction = objectOrFunction;function isFunction(x) {
+        return typeof x === 'function';
+      }
+
+      __exports__.isFunction = isFunction;function isMaybeThenable(x) {
+        return typeof x === 'object' && x !== null;
+      }
+
+      __exports__.isMaybeThenable = isMaybeThenable;var _isArray;
+      if (!Array.isArray) {
+        _isArray = function (x) {
+          return Object.prototype.toString.call(x) === '[object Array]';
+        };
+      } else {
+        _isArray = Array.isArray;
+      }
+
+      var isArray = _isArray;
+      __exports__.isArray = isArray;
+      // Date.now is not available in browsers < IE9
+      // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Date/now#Compatibility
+      var now = Date.now || function() { return new Date().getTime(); };
+      __exports__.now = now;
+      function F() { }
+
+      var o_create = (Object.create || function (o) {
+        if (arguments.length > 1) {
+          throw new Error('Second argument not supported');
+        }
+        if (typeof o !== 'object') {
+          throw new TypeError('Argument must be an object');
+        }
+        F.prototype = o;
+        return new F();
       });
+      __exports__.o_create = o_create;
+    });
   requireModule("ember");
 
-})();//# sourceMappingURL=ember.map
+})();
