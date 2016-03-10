@@ -1,4 +1,4 @@
-Ember.TEMPLATES["about"] = Ember.HTMLBars.template((function() {
+define('second-app/templates/about', ['exports'], function(exports) { exports['default'] = Ember.HTMLBars.template((function() {
   return {
     isHTMLBars: true,
     revision: "Ember@1.12.2",
@@ -35,9 +35,10 @@ Ember.TEMPLATES["about"] = Ember.HTMLBars.template((function() {
       return fragment;
     }
   };
-}()));
+}())); 
+});
 
-Ember.TEMPLATES["application"] = Ember.HTMLBars.template((function() {
+define('second-app/templates/application', ['exports'], function(exports) { exports['default'] = Ember.HTMLBars.template((function() {
   return {
     isHTMLBars: true,
     revision: "Ember@1.12.2",
@@ -94,9 +95,10 @@ Ember.TEMPLATES["application"] = Ember.HTMLBars.template((function() {
       return fragment;
     }
   };
-}()));
+}())); 
+});
 
-Ember.TEMPLATES["index"] = Ember.HTMLBars.template((function() {
+define('second-app/templates/index', ['exports'], function(exports) { exports['default'] = Ember.HTMLBars.template((function() {
   return {
     isHTMLBars: true,
     revision: "Ember@1.12.2",
@@ -133,4 +135,5 @@ Ember.TEMPLATES["index"] = Ember.HTMLBars.template((function() {
       return fragment;
     }
   };
-}()));
+}())); 
+});

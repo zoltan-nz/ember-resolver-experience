@@ -7,6 +7,7 @@ define('second-app/app', ['exports', 'ember', 'ember/resolver', 'ember/load-init
   App = _ember['default'].Application.extend(
     {
       modulePrefix: 'second-app',
+      // Resolver: _ember['default'].DefaultResolver
       Resolver: _emberResolver['default']
     }
   );
@@ -29,7 +30,8 @@ define('second-app/router', ['exports', 'ember'], function(exports, _ember) {
   exports['default'] = Router;
 });
 
-require('second-app/app')['default'].create({
+// Assign the created application to a global variable for debugging.
+var App = require('second-app/app')['default'].create({
   name: 'second-app',
   LOG_RESOLVER: true
 });

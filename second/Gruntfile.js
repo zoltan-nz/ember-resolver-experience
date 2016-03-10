@@ -1,29 +1,25 @@
-module.exports = function (grunt) {
-    grunt.loadNpmTasks('grunt-ember-templates');
+module.exports = function(grunt) {
+  grunt.loadNpmTasks('grunt-ember-templates');
 
-    grunt.initConfig({
+  grunt.initConfig({
 
-        emberTemplates: {
-            compile: {
-                options: {
-                    // namespace: 'SecondApp.Templates',
-                    templateCompilerPath: 'vendor/ember-template-compiler.js',
-                    handlebarsPath: 'vendor/handlebars.js',
-                    templateBasePath: 'templates',
-                    // amd: true,
-                    // precompile: true
-                    // templateRegistration: function(name, contents) {
-                    //     return "define('second-app/" + name + "', [], function() { return " + contents + "; });";
-                    // }
-                },
-                files: {
-                    "tmp/templates.js": "templates/**/*.hbs"
-                }
-            }
+    emberTemplates: {
+      compile: {
+        options: {
+          templateCompilerPath: 'vendor/ember-template-compiler.js',
+          handlebarsPath: 'vendor/ember-template-compiler.js',
+          // templateBasePath: 'templates'
+          templateRegistration: function(name, contents) {
+            return "define('second-app/" + name + "', ['exports'], function(exports) { exports['default'] = " + contents + "; \n});";
+          }
+        },
+        files: {
+          "tmp/templates.js": "templates/**/*.hbs"
         }
+      }
+    }
 
-    });
+  });
 
-    grunt.registerTask('default', ['emberTemplates']);
-
+  grunt.registerTask('default', ['emberTemplates']);
 };

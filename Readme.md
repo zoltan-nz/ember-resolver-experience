@@ -7,9 +7,9 @@ Web server is `http-server`
 $ npm start
 ```
 
-# 1. First
+# 1. First - The Classic
 
-* Basic index.html page
+* Create a basic index.html page
 * Add jQuery
 * Add Ember 1.12 debugger
 
@@ -39,19 +39,21 @@ Ember.keys(Ember.__loader.registry)
 
 * Setup `app.js` and create an app.
 
-# 2. Second
+# 2. Second - Manage modules manually
 
 For a more complex solution you need the following js files:
 
--> jquery.js
--> ember.js
--> ember-template-compiler.js
--> [loader.js](https://github.com/ember-cli/loader.js)
--> [load-initializers.js](https://github.com/ember-cli/ember-load-initializers)
--> [resolver.js](https://github.com/ember-cli/ember-resolver)
+>* jquery.js
+>* ember.js
+>* ember-template-compiler.js
+>* [loader.js](https://github.com/ember-cli/loader.js)
+>* [load-initializers.js](https://github.com/ember-cli/ember-load-initializers)
+>* [resolver.js](https://github.com/ember-cli/ember-resolver)
+>
+>
+>* shims.js
 
--> shims.js
-The above Ember.js create a global `Ember` object, this shims just define an `ember` module.
+The above Ember.js create a global `Ember` object, the `shims.js` just define an `ember` module.
 
 Let's create a `vendor` folder:
 ```
@@ -85,17 +87,23 @@ The `loader.js` provide a `define()` and a `require()` global function. The `def
 
 `require.entries` object will contain all the preloaded modules.
 
+If a module is used, will be "resolved" and it will be stored in the `resolver._cache`.
+
 Let's create our App in `assets` folder.
 
 It is the most basic app, with one `about` route.
 
 ```
+"use strict";
+/* globals define registry requirejs */
+
 define('second-app/app', ['exports', 'ember', 'ember/resolver', 'ember/load-initializers'], function(exports, _ember, _emberResolver, _loadInitializers) {
   var App = undefined;
 
   App = _ember['default'].Application.extend(
     {
       modulePrefix: 'second-app',
+      // Resolver: _ember['default'].DefaultResolver
       Resolver: _emberResolver['default']
     }
   );
@@ -118,7 +126,8 @@ define('second-app/router', ['exports', 'ember'], function(exports, _ember) {
   exports['default'] = Router;
 });
 
-require('second-app/app')['default'].create({
+// Assign the created application to a global variable for debugging.
+var App = require('second-app/app')['default'].create({
   name: 'second-app',
   LOG_RESOLVER: true
 });
@@ -138,85 +147,93 @@ Mandatory:
 
 ### Where are the templates?
 
-Compile template.js file based on hbs template files with grunt.
-
-Basic setup, with an index.html, manually added vendor files.
-
-Using `Gruntfile.js`
-Using `package.json`
-
-Manually recreate the structure what Ember-cli generates in dist folder.
+* We save all the `hbs` file in the expected structure in `templates` folder.
+* We will use `grunt-ember-templates` to compile
 
 ```
-index.html
-/assets
-  app.js
-  resolver.js
+npm install --save-dev grunt-ember-templates
 ```
 
-Looks, `loader.js` and `ember/resolver` is important.
+Because of the dependency, we have to install three other packages, but we will not use all of them, just `grunt-ember-templates` needs those.
 
-- define
-- require
+TODO: updating `grunt-ember-templates` to work with the latest `htmlbar`, 'handlebar' and removing old dependencies.
 
-Add loader to the vendor
-Add router to app.js
-App resolver to resolver.js
+```
+  "devDependencies": {
+    "ember-template-compiler": "^1.9.0-alpha",
+    "grunt": "^0.4.5",
+    "grunt-ember-templates": "^0.6.0",
+    "handlebars": "~2"
+  }
+```
 
-Shims.
-Ember added to global namespace, shims only create a reference with `define()`.
+Two new files in our project: `Gruntfile.js` and `package.json`
 
+### Gruntfile.js configuration
 
-### grunt-ember-template
+**files**
+*(mandatory)*
+Final template file and the source file.
+
+**templateCompilerPath**
+*(mandatory)*
+The location of the actual `ember-template-compiler.js`
+
+**handlebarsPath**
+*(mandatory)*
+The location of the `handlebars.js`, however in our case
+
 
 ```
 //Gruntfile.js
 
-module.exports = function (grunt) {
-    grunt.loadNpmTasks('grunt-ember-templates');
+module.exports = function(grunt) {
+  grunt.loadNpmTasks('grunt-ember-templates');
 
-    grunt.initConfig({
+  grunt.initConfig({
 
-        emberTemplates: {
-            compile: {
-                options: {
-                    templateCompilerPath: 'vendor/ember-template-compiler.js',
-                    handlebarsPath: 'vendor/handlebars.js',
-                    amd: true,
-                    precompile: true,
-                    // templateRegistration: function(name, contents) {
-                    //     return "define('second-app/" + name + "', [], function() { return " + contents + "; });";
-                    // }
-                },
-                files: {
-                    "tmp/templates.js": "templates/**/*.hbs"
-                }
-            }
+    emberTemplates: {
+      compile: {
+        options: {
+          templateCompilerPath: 'vendor/ember-template-compiler.js',
+          handlebarsPath: 'vendor/ember-template-compiler.js',
+          // templateBasePath: 'templates'
+          templateRegistration: function(name, contents) {
+            return "define('second-app/" + name + "', ['exports'], function(exports) { exports['default'] = " + contents + "; \n});";
+          }
+        },
+        files: {
+          "tmp/templates.js": "templates/**/*.hbs"
         }
+      }
+    }
 
-    });
+  });
 
-    grunt.registerTask('default', ['emberTemplates']);
-
+  grunt.registerTask('default', ['emberTemplates']);
 };
 ```
+It will generate the following:
 
-**files**
+```
+// tmp/templates.js
+define('second-app/templates/about', ['exports'], function(exports) { exports['default'] = Ember.HTMLBars.template((function() {
+  return {
+    isHTMLBars: true,
+    revision: "Ember@1.12.2",
+    ...
 
-Final template file and the source file.
-
-**templateCompilerPath**
-
-The location of the actual `ember-template-compiler.js`
-
-**handlebarsPath**
-
-The location of the `handlebars.js`
-
-**amd**
+define('second-app/templates/application', ['exports'], function(exports) { exports['default'] = Ember.HTMLBars.template((function() {
+  return {
+    isHTMLBars: true,
+    revision: "Ember@1.12.2",
+    ...
+```
 
 
-If the resolver is the Ember.DefaultResolver, basically without any Resolver, the template grunt task configurations should be the following:
+If the resolver is the Ember.DefaultResolver, basically without any Resolver, the template grunt task configurations should be the following.
+
+However, in this case you have to put everything in the global namespace and you should use the classic JavaScript naming, like `App.IndexController`, so you cannot use the modern module loader.
 
 ```
 module.exports = function (grunt) {
@@ -228,7 +245,7 @@ module.exports = function (grunt) {
             compile: {
                 options: {
                     templateCompilerPath: 'vendor/ember-template-compiler.js',
-                    handlebarsPath: 'vendor/handlebars.js',
+                    handlebarsPath: 'vendor/ember-template-compiler.js',
                     templateBasePath: 'templates',
                 },
                 files: {
@@ -238,14 +255,15 @@ module.exports = function (grunt) {
         }
 
     });
-
     grunt.registerTask('default', ['emberTemplates']);
-
 };
 ```
+
 It will generate a `tmp/templates.js` file with the compiled content
 
 ```
 Ember.TEMPLATES["application"] = Ember.HTMLBars.template((function() {...}
 Ember.TEMPLATES["about"] = Ember.HTMLBars.template((function() {...}
 ```
+
+# 3. Third - The Ember-CLI compatible Grunt solution
