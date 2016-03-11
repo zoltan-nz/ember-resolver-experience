@@ -267,3 +267,265 @@ Ember.TEMPLATES["about"] = Ember.HTMLBars.template((function() {...}
 ```
 
 # 3. Third - The Ember-CLI compatible Grunt solution
+
+* Manage assets with bower with `bower.json`
+* Node package management with `package.json`
+* Manage tasks with Grunt: `Gruntfile.js`
+* Transpile code with grunt-babel
+
+```
+$ mkdir third
+$ cd third
+```
+### Bower packages
+
+Install vendor files in bower_components folder. Ember bower package will install also the compatible jQuery package.
+```
+$ bower init
+$ bower install --save ember#1.12.2
+```
+Note for ember-load-initializers
+"For those using ember-cli <2.3.0-beta.2, please use ember-load-initializers@0.1.7 instead of the current version."
+```
+$ bower install --save ember-load-initializers#0.1.7
+```
+From `ember-resolver` the latest version which supports non Ember-CLI environment is v0.1.21.
+
+```
+bower install --save ember-resolver#0.1.21
+```
+The latest version from `loader.js` should work.
+```
+bower install --save loader.js#~4.0.1
+```
+And the ember-cli-shims for modularizing all ember modules, which is nested in ember.js package. The `0.0.6` version is preferred if you are using Ember v2.2 or earlier.
+
+```
+bower install -save ember-cli-shims#0.0.6
+```
+
+### Grunt packages
+
+* load-grunt-config
+   Autoload all grunt task with load-grunt-tasks
+   Each config in separate file
+   https://github.com/firstandthird/load-grunt-config
+
+* grunt-babel
+ES6 transpiler.
+* contrib-clean
+Clean files and folders.
+* contrib-copy
+* concat-sourcemap
+
+* ember-templates
+
+
+```
+npm install --save-dev load-grunt-tasks
+require('load-grunt-tasks')(grunt);
+```
+
+Important steps:
+
+App Folder
+/app
+  /components
+  /controllers
+  /templates
+  app.js
+  index.html
+  router.js
+
+Transpilation
+/tmp
+  /transpiled
+
+Concatenated with source map to
+/dist
+  /assets
+
+https://github.com/stefanpenner/ember-app-kit/blob/master/Gruntfile.js
+
+
+## Experiment with `babel-grunt`, which is not a solution
+
+In this experiment I installed `grunt-babel`, `babel-preset-es2015` and `babel-plugin-transform-es2015-modules-amd`
+
+```
+npm install --save-dev grunt-babel babel-preset-es2015 babel-plugin-transform-es2015-modules-amd
+```
+
+```
+module.exports = {
+  options: {
+    sourceMap: true,
+    presets: ['es2015'],
+    plugins: ['transform-es2015-modules-amd'],
+    moduleIds: true,
+    sourceRoot: 'app',
+    moduleRoot: 'third-app'
+  },
+
+  dist: {
+    files: [{
+      expand: true,
+      cwd: 'app/',
+      src: ['**/*.js'],
+      dest: 'tmp/transpiled/app'
+    }]
+  }
+};
+```
+Babel configuration options:
+
+* We need source map: `sourceMap: true`
+* We would like to use the `es2015` preset: `presets: ['es2015']`
+* Transform our code to amd compatible: `plugins: ['transform-es2015-modules-amd']`
+* We need a module id: `moduleIds: true`
+* We don't want to insert in the module name that extra `app` folder name. `sourceRoute: 'app'`
+* Our modulePrefix would be the moduleRoot: `moduleRoot: 'third-app'`
+
+This would generate the following transpiled code, which is not working.
+
+```javascript
+define('third-app/app', ['exports', 'ember', 'ember/resolver', 'ember/load-initializers'], function (exports, _ember, _resolver, _loadInitializers) {
+  'use strict';
+
+  Object.defineProperty(exports, "__esModule", {
+    value: true
+  });
+
+  var _ember2 = _interopRequireDefault(_ember);
+
+  var _resolver2 = _interopRequireDefault(_resolver);
+
+  var _loadInitializers2 = _interopRequireDefault(_loadInitializers);
+
+  function _interopRequireDefault(obj) {
+    return obj && obj.__esModule ? obj : {
+      default: obj
+    };
+  }
+
+  var App = void 0;
+
+  _ember2.default.MODEL_FACTORY_INJECTIONS = true;
+
+  App = _ember2.default.Application.extend({
+    modulePrefix: 'third-app',
+    Resolver: _resolver2.default
+  });
+
+  (0, _loadInitializers2.default)(App, config.modulePrefix);
+
+  exports.default = App;
+});
+//# sourceMappingURL=app.js.map
+```
+
+Because of Babel 6 expect an `__esModule` property in the imported module, which is not exist in Ember.js modules, the above code doesn't work. `_interopRequireDefault` adds an extra default to the module. `_ember2.default.default.Application.extend` would work in this case.
+
+## Experiment with `grunt-rollup`
+
+```
+npm i -D grunt-rollup
+npm i -D rollup-plugin-babel
+```
+
+```javascript
+// /tasks/options/rollup.js
+
+var babel = require('rollup-plugin-babel');
+
+module.exports = {
+  options: {
+    sourceMap: true,
+    format: 'amd',
+    moduleId: 'third-app',
+    moduleName: 'example',
+    exports: 'named',
+
+    bundle: '',
+
+    plugins: [
+      babel({
+        presets: ['es2015-rollup']
+      })
+    ]
+  },
+
+  default: {
+    files: [{
+      expand: true,
+      cwd: 'app/',
+      src: ['**/*.js'],
+      dest: 'tmp/transpiled/app'
+    }]
+  }
+};
+
+```
+
+The problem with this, rollup doesn't really support dynamically named modules. The `moduleId` appears in each module, but only that
+
+
+## Concatenating transpiled code and our vendor files
+
+```javascript
+module.exports = {
+  options: {
+    sourceMap: true
+  },
+
+  default: {
+    files: {
+      'dist/assets/app.js': 'tmp/transpiled/app/**/*.js',
+      'dist/assets/vendor.js': [
+        'bower_components/loader.js/lib/loader/loader.js',
+        'bower_components/jquery/dist/jquery.js',
+        'bower_components/ember/ember.debug.js',
+        'bower_components/ember/ember-template-compiler.js',
+        'bower_components/ember-resolver/dist/ember-resolver.js',
+        'bower_components/ember-load-initializers/ember-load-initializers.js',
+        'bower_components/ember-cli-shims/app-shims.js'
+      ]
+    }
+  }
+};
+```
+
+## Back to babel, it works with shim
+
+Added this shim to the project and babel is working. :)
+
+```
+(function() {
+  /* globals define, require, Ember, DS, jQuery */
+
+  function generateModuleFromGlobal(name, values) {
+    define(name, [], function() {
+      'use strict';
+
+      return {
+        'default': values,
+        '__esModule': true
+      };
+    });
+  }
+
+  function addEsModuleProperty(moduleName) {
+    Object.defineProperty(require(moduleName), "__esModule", {
+      value: true
+    });
+  }
+
+  generateModuleFromGlobal('ember', Ember );
+  generateModuleFromGlobal('jquery', self.jQuery );
+
+  addEsModuleProperty('ember/resolver');
+  addEsModuleProperty('ember/load-initializers');
+
+})();
+
+```

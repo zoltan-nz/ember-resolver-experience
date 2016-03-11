@@ -1,5 +1,5 @@
 module.exports = function(grunt) {
-  grunt.loadNpmTasks('grunt-ember-templates');
+  grunt.loadNpmTasks('tasks-ember-templates');
 
   grunt.initConfig({
 
