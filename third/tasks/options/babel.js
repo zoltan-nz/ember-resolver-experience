@@ -1,12 +1,10 @@
 module.exports = {
   options: {
     sourceMap: false,
-    presets: ['es2015'],
-    plugins: ['transform-es2015-modules-amd'],
+    modules: 'amdStrict',
     moduleIds: true,
     sourceRoot: 'app',
-    moduleRoot: 'third-app',
-    ignore: 'shims.js'
+    moduleRoot: 'third-app'
   },
 
   dist: {

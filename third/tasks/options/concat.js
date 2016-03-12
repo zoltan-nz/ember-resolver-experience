@@ -13,6 +13,7 @@ module.exports = {
         'bower_components/ember/ember-template-compiler.js',
         'bower_components/ember-resolver/dist/ember-resolver.js',
         'bower_components/ember-load-initializers/ember-load-initializers.js',
+        'bower_components/ember-cli-shims/app-shims.js'
       ]
     }
   }

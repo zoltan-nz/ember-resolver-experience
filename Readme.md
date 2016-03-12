@@ -348,7 +348,7 @@ Concatenated with source map to
 https://github.com/stefanpenner/ember-app-kit/blob/master/Gruntfile.js
 
 
-## Experiment with `babel-grunt`, which is not a solution
+## Experiment with `babel-grunt`
 
 In this experiment I installed `grunt-babel`, `babel-preset-es2015` and `babel-plugin-transform-es2015-modules-amd`
 
@@ -528,4 +528,31 @@ Added this shim to the project and babel is working. :)
 
 })();
 
+```
+
+## Babel v5 with a new option
+
+It looks, Babel v6 is not our friend in this story. Let's go back to v5.
+
+"Updating" `package.json` with this `"grunt-babel": "~5.0.3",`, and using `modules: 'amdStrict'` option in `babel.js` grunt configuration:
+
+```
+module.exports = {
+  options: {
+    sourceMap: false,
+    modules: 'amdStrict',
+    moduleIds: true,
+    sourceRoot: 'app',
+    moduleRoot: 'third-app'
+  },
+
+  dist: {
+    files: [{
+      expand: true,
+      cwd: 'app/',
+      src: ['**/*.js'],
+      dest: 'tmp/transpiled/app'
+    }]
+  }
+};
 ```
