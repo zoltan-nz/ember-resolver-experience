@@ -7,5 +7,5 @@ module.exports = function(grunt) {
     loadGruntTasks: true
   });
   
-  grunt.registerTask('default', ['clean', 'babel', 'concat']);
+  grunt.registerTask('default', ['clean', 'babel', 'emberTemplates', 'concat', 'copy']);
 };

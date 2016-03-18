@@ -5,7 +5,7 @@ module.exports = {
 
   default: {
     files: {
-      'dist/assets/app.js': 'tmp/transpiled/app/**/*.js',
+      'dist/assets/app.js': ['tmp/transpiled/app/**/*.js', 'tmp/templates.js'],
       'dist/assets/vendor.js': [
         'bower_components/loader.js/lib/loader/loader.js',
         'bower_components/jquery/dist/jquery.js',

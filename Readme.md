@@ -4,8 +4,12 @@ Ember Resolver Experience
 Web server is `http-server`
 
 ```
+$ cd ember-resolver-experiment
+$ npm install
 $ npm start
 ```
+
+In the `2_nd`, `3_rd` and `4_th` folder, you have to run `npm install` and/or `bower install`. It is depend of the project folder.
 
 # 1. First - The Classic
 
@@ -556,3 +560,30 @@ module.exports = {
   }
 };
 ```
+
+## More grunt tasks
+
+* clean
+* concat
+* copy
+* emberTemplates
+
+* Creating the app in index.html
+
+```
+<script>
+  require('third-app/app')['default'].create({
+    name: 'third-app',
+    version: '0.0.1',
+    LOG_RESOLVER: true
+  });
+</script>
+```
+
+# Experiment Four
+
+WIP
+
+1. Creating an index.html
+2. Import vendor libraries with require.js
+3. Import the transpiled `app.js` from the Third experiment.

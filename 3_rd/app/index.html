@@ -1,0 +1,19 @@
+<html>
+<head>
+  <base href="/3_rd/dist/" />
+</head>
+<body>
+
+<script src="assets/vendor.js"></script>
+<script src="assets/app.js"></script>
+
+<script>
+  require('third-app/app')['default'].create({
+    name: 'third-app',
+    version: '0.0.1',
+    LOG_RESOLVER: true
+  });
+</script>
+
+</body>
+</html>
