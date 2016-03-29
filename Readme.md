@@ -155,19 +155,13 @@ Mandatory:
 * We will use `grunt-ember-templates` to compile
 
 ```
-npm install --save-dev grunt-ember-templates
+npm install --save-dev grunt-ember-templates@1.0.0
 ```
-
-Because of the dependency, we have to install three other packages, but we will not use all of them, just `grunt-ember-templates` needs those.
-
-TODO: updating `grunt-ember-templates` to work with the latest `htmlbar`, 'handlebar' and removing old dependencies.
 
 ```
   "devDependencies": {
-    "ember-template-compiler": "^1.9.0-alpha",
     "grunt": "^0.4.5",
-    "grunt-ember-templates": "^0.6.0",
-    "handlebars": "~2"
+    "grunt-ember-templates": "~1.0.0",
   }
 ```
 
@@ -183,10 +177,6 @@ Final template file and the source file.
 *(mandatory)*
 The location of the actual `ember-template-compiler.js`
 
-**handlebarsPath**
-*(mandatory)*
-The location of the `handlebars.js`, however in our case
-
 
 ```
 //Gruntfile.js
@@ -200,7 +190,6 @@ module.exports = function(grunt) {
       compile: {
         options: {
           templateCompilerPath: 'vendor/ember-template-compiler.js',
-          handlebarsPath: 'vendor/ember-template-compiler.js',
           // templateBasePath: 'templates'
           templateRegistration: function(name, contents) {
             return "define('second-app/" + name + "', ['exports'], function(exports) { exports['default'] = " + contents + "; \n});";
@@ -249,7 +238,6 @@ module.exports = function (grunt) {
             compile: {
                 options: {
                     templateCompilerPath: 'vendor/ember-template-compiler.js',
-                    handlebarsPath: 'vendor/ember-template-compiler.js',
                     templateBasePath: 'templates',
                 },
                 files: {
