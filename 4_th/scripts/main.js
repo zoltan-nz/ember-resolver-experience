@@ -1,3 +1,0 @@
-requirejs(["./common"], function(util) {
-  
-});
