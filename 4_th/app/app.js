@@ -1,8 +1,5 @@
-define('app', ['ember'], function (Ember) {
-
+require(['jquery', 'ember'], function ($, Ember) {
   $(function() {
-    debugger;
     Ember.Application.create();
   });
-
 });
