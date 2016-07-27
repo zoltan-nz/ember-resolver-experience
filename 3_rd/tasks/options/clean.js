@@ -1,4 +1,6 @@
+var config = require('../../config');
+
 module.exports = {
   default:
-    ['tmp', 'dist']
+    ["<%= config.tmp %>", "<%= config.dist %>"]
 };
