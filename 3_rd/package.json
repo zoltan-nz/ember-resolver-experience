@@ -19,7 +19,7 @@
     "grunt-contrib-clean": "^1.0.0",
     "grunt-contrib-concat": "^1.0.0",
     "grunt-contrib-copy": "^1.0.0",
-    "grunt-ember-templates": "~1.0.0",
+    "grunt-ember-templates": "^1.0.0",
     "grunt-rollup": "^0.6.2",
     "load-grunt-config": "^0.19.1",
     "load-grunt-tasks": "^3.4.1",
